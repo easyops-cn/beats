@@ -208,6 +208,10 @@ func (f *Log) wait() {
 			f.backoff = f.config.MaxBackoff
 		}
 	}
+
+	if f.config.ReadInterval > 0 {
+		time.Sleep(f.config.ReadInterval)
+	}
 }
 
 // Close closes the done channel but no th the file handler

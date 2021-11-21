@@ -230,6 +230,9 @@ func (s *diskstore) Close() error {
 // The log file is marked as invalid if the write fails. This will trigger a
 // checkpoint operation in the future.
 func (s *diskstore) LogOperation(op op) error {
+	if !s.log.IsEnabled() {
+		return nil
+	}
 	if s.logInvalid {
 		return errLogInvalid
 	}

@@ -26,9 +26,10 @@ import (
 // Config contains the configuration options for the logger. To create a Config
 // from a common.Config use logp/config.Build.
 type Config struct {
-	Beat      string   `config:",ignore"`   // Name of the Beat (for default file name).
-	Level     Level    `config:"level"`     // Logging level (error, warning, info, debug).
-	Selectors []string `config:"selectors"` // Selectors for debug level logging.
+	Beat       string   `config:",ignore"`     // Name of the Beat (for default file name).
+	LogEnabled bool     `config:"log_enabled"` // Is Logging enabled.
+	Level      Level    `config:"level"`       // Logging level (error, warning, info, debug).
+	Selectors  []string `config:"selectors"`   // Selectors for debug level logging.
 
 	toObserver  bool
 	toIODiscard bool
@@ -74,6 +75,7 @@ const (
 // Beat is supposed to be run within.
 func DefaultConfig(environment Environment) Config {
 	return Config{
+		LogEnabled: true,
 		Level: defaultLevel,
 		Files: FileConfig{
 			Suffix:          file.SuffixCount,

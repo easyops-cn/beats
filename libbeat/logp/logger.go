@@ -29,8 +29,9 @@ type LogOption = zap.Option
 
 // Logger logs messages to the configured output.
 type Logger struct {
-	logger *zap.Logger
-	sugar  *zap.SugaredLogger
+	enabled bool
+	logger  *zap.Logger
+	sugar   *zap.SugaredLogger
 }
 
 func newLogger(rootLogger *zap.Logger, selector string, options ...LogOption) *Logger {
@@ -38,7 +39,7 @@ func newLogger(rootLogger *zap.Logger, selector string, options ...LogOption) *L
 		WithOptions(zap.AddCallerSkip(1)).
 		WithOptions(options...).
 		Named(selector)
-	return &Logger{log, log.Sugar()}
+	return &Logger{enabled: true, logger: log, sugar: log.Sugar()}
 }
 
 // NewLogger returns a new Logger labeled with the name of the selector. This
@@ -50,24 +51,32 @@ func NewLogger(selector string, options ...LogOption) *Logger {
 	return newLogger(loadLogger().rootLogger, selector, options...)
 }
 
+func (l *Logger) IsEnabled() bool {
+	return l.enabled
+}
+
 // WithOptions returns a clone of l with options applied.
 func (l *Logger) WithOptions(options ...LogOption) *Logger {
 	cloned := l.logger.WithOptions(options...)
-	return &Logger{cloned, cloned.Sugar()}
+	return &Logger{true, cloned, cloned.Sugar()}
+}
+
+func (l *Logger) Enable(enabled bool) *Logger {
+	return &Logger{enabled, l.logger, l.sugar}
 }
 
 // With creates a child logger and adds structured context to it. Fields added
 // to the child don't affect the parent, and vice versa.
 func (l *Logger) With(args ...interface{}) *Logger {
 	sugar := l.sugar.With(args...)
-	return &Logger{sugar.Desugar(), sugar}
+	return &Logger{true, sugar.Desugar(), sugar}
 }
 
 // Named adds a new path segment to the logger's name. Segments are joined by
 // periods.
 func (l *Logger) Named(name string) *Logger {
 	logger := l.logger.Named(name)
-	return &Logger{logger, logger.Sugar()}
+	return &Logger{true, logger, logger.Sugar()}
 }
 
 // Sprint

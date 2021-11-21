@@ -116,11 +116,13 @@ func ConfigureWithOutputs(cfg Config, outputs ...zapcore.Core) error {
 
 	sink = newMultiCore(append(outputs, sink)...)
 	root := zap.New(sink, makeOptions(cfg)...)
+	lg := newLogger(root, "")
+	lg.Enable(cfg.LogEnabled)
 	storeLogger(&coreLogger{
 		selectors:    selectors,
 		rootLogger:   root,
 		globalLogger: root.WithOptions(zap.AddCallerSkip(1)),
-		logger:       newLogger(root, ""),
+		logger: lg,
 		observedLogs: observedLogs,
 	})
 	return nil
