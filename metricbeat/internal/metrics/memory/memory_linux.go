@@ -41,13 +41,14 @@ func get(rootfs string) (Memory, error) {
 	memData := Memory{}
 
 	var free, cached uint64
+	var ok bool
 	if total, ok := table["MemTotal"]; ok {
 		memData.Total = metrics.OptUintWith(total)
 	}
-	if free, ok := table["MemFree"]; ok {
+	if free, ok = table["MemFree"]; ok {
 		memData.Free = metrics.OptUintWith(free)
 	}
-	if cached, ok := table["Cached"]; ok {
+	if cached, ok = table["Cached"]; ok {
 		memData.Cached = metrics.OptUintWith(cached)
 	}
 
