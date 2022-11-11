@@ -155,7 +155,13 @@ func (proc *Process) getDetails(envPredicate func(string) bool) error {
 		if err := args.Get(proc.Pid); err != nil && !sigar.IsNotImplemented(err) {
 			return fmt.Errorf("error getting process arguments for pid=%d: %v", proc.Pid, err)
 		}
-		proc.Args = args.List
+		newArg := make([]string, 0, len(args.List))
+		for _, arg := range args.List {
+			if len(arg) != 0 {
+				newArg = append(newArg, arg)
+			}
+		}
+		proc.Args = newArg
 	}
 
 	if proc.CmdLine == "" && len(proc.Args) > 0 {
