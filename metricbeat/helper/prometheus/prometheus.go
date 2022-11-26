@@ -32,6 +32,7 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/metricbeat/helper"
+	"github.com/elastic/beats/v7/metricbeat/helper/easyops"
 	"github.com/elastic/beats/v7/metricbeat/mb"
 )
 
@@ -139,6 +140,9 @@ type MetricsMapping struct {
 
 	// ExtraFields adds the given fields to all events coming from `GetProcessedMetrics`
 	ExtraFields map[string]string
+
+	// aggregate metrics
+	AggregateMetrics []easyops.AggregateMetricMap
 }
 
 func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *MetricsMapping) ([]common.MapStr, error) {
@@ -253,6 +257,12 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 				event.DeepUpdate(info.Meta)
 			}
 		}
+	}
+
+	for _, am := range mapping.AggregateMetrics {
+		builder := easyops.NewAggregateMetricBuilder(am)
+		es := builder.Build(events)
+		events = append(events, es...)
 	}
 
 	return events, nil

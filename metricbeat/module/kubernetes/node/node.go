@@ -20,10 +20,11 @@ package node
 import (
 	"fmt"
 
-	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/common/kubernetes"
 	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/metricbeat/helper"
+	"github.com/elastic/beats/v7/metricbeat/helper/easyops"
+	"github.com/elastic/beats/v7/metricbeat/helper/prometheus"
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
 	k8smod "github.com/elastic/beats/v7/metricbeat/module/kubernetes"
@@ -40,6 +41,17 @@ var (
 		DefaultScheme: defaultScheme,
 		DefaultPath:   defaultPath,
 	}.Build()
+
+	mapping = &prometheus.MetricsMapping{
+		AggregateMetrics: []easyops.AggregateMetricMap{
+			{
+				Type:          easyops.AggregateTypeSub,
+				Field:         "memory.allocated.bytes",
+				OriginMetrics: []string{"memory.available.bytes", "memory.usage.bytes"},
+				GroupKeys:     []string{},
+			},
+		},
+	}
 
 	logger = logp.NewLogger("kubernetes.node")
 )
@@ -97,23 +109,25 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 		return
 	}
 
-	event, err := eventMapping(body)
+	events, err := eventMapping(body, mapping)
 	if err != nil {
 		m.Logger().Error(err)
 		reporter.Error(err)
 		return
 	}
 
-	m.enricher.Enrich([]common.MapStr{event})
+	m.enricher.Enrich(events)
 
-	e, err := util.CreateEvent(event, "kubernetes.node")
-	if err != nil {
-		m.Logger().Error(err)
-	}
+	for _, event := range events {
+		e, err := util.CreateEvent(event, "kubernetes.node")
+		if err != nil {
+			m.Logger().Error(err)
+		}
 
-	if reported := reporter.Event(e); !reported {
-		m.Logger().Debug("error trying to emit event")
-		return
+		if reported := reporter.Event(e); !reported {
+			m.Logger().Debug("error trying to emit event")
+			return
+		}
 	}
 
 	return
