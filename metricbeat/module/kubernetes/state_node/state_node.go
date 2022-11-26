@@ -59,9 +59,22 @@ var (
 					"PIDPressure":    "pid_pressure",
 				},
 			)),
+
+			// high version
+			"kube_node_status_allocatable": p.Metric("pod", p.OpFilterMap(
+				"resource", map[string]string{
+					"pods": "allocatable.total",
+				},
+			)),
+			"kube_node_status_capacity": p.Metric("cpu", p.OpFilterMap(
+				"resource", map[string]string{
+					"cpu": "capacity.cores",
+				},
+			)),
 		},
 		Labels: map[string]p.LabelMap{
-			"node": p.KeyLabel("name"),
+			"node":      p.KeyLabel("name"),
+			"namespace": p.KeyLabel(mb.ModuleDataKey + ".namespace"),
 		},
 	}
 )

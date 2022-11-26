@@ -22,11 +22,13 @@ import (
 	"fmt"
 
 	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/metricbeat/helper/easyops"
+	"github.com/elastic/beats/v7/metricbeat/helper/prometheus"
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/module/kubernetes"
 )
 
-func eventMapping(content []byte) ([]common.MapStr, error) {
+func eventMapping(content []byte, mapping *prometheus.MetricsMapping) ([]common.MapStr, error) {
 	events := []common.MapStr{}
 
 	var summary kubernetes.Summary
@@ -74,5 +76,12 @@ func eventMapping(content []byte) ([]common.MapStr, error) {
 		}
 
 	}
+
+	for _, am := range mapping.AggregateMetrics {
+		builder := easyops.NewAggregateMetricBuilder(am)
+		es := builder.Build(events)
+		events = append(events, es...)
+	}
+
 	return events, nil
 }

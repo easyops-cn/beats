@@ -24,6 +24,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/metricbeat/helper/easyops"
 	p "github.com/elastic/beats/v7/metricbeat/helper/prometheus"
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
@@ -61,6 +62,22 @@ var (
 			"kube_pod_container_status_waiting":                 p.KeywordMetric("status.phase", "waiting"),
 			"kube_pod_container_status_terminated_reason":       p.LabelMetric("status.reason", "reason"),
 			"kube_pod_container_status_waiting_reason":          p.LabelMetric("status.reason", "reason"),
+
+			// high version
+			"kube_pod_container_resource_requests": p.Metric("cpu", p.OpFilterMap(
+				"resource", map[string]string{
+					"cpu": "request.cores",
+				},
+			)),
+		},
+
+		AggregateMetrics: []easyops.AggregateMetricMap{
+			{
+				Type:          easyops.AggregateTypeSum,
+				Field:         "pod.cpu.request.cores",
+				OriginMetrics: []string{"cpu.request.cores"},
+				GroupKeys:     []string{"_module.namespace", "_module.pod.name"},
+			},
 		},
 
 		Labels: map[string]p.LabelMap{
