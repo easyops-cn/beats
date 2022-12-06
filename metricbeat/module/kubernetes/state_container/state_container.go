@@ -69,6 +69,11 @@ var (
 					"cpu": "request.cores",
 				},
 			)),
+			"kube_pod_container_resource_limits": p.Metric("memory", p.OpFilterMap(
+				"resource", map[string]string{
+					"memory": "limit.bytes",
+				},
+			)),
 		},
 
 		AggregateMetrics: []easyops.AggregateMetricMap{
