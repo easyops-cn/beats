@@ -64,14 +64,16 @@ var (
 			"kube_pod_container_status_waiting_reason":          p.LabelMetric("status.reason", "reason"),
 
 			// high version
-			"kube_pod_container_resource_requests": p.Metric("cpu", p.OpFilterMap(
+			"kube_pod_container_resource_requests": p.Metric("", p.OpFilterMap(
 				"resource", map[string]string{
-					"cpu": "request.cores",
+					"cpu":    "cpu.request.cores",
+					"memory": "memory.request.bytes",
 				},
 			)),
-			"kube_pod_container_resource_limits": p.Metric("memory", p.OpFilterMap(
+			"kube_pod_container_resource_limits": p.Metric("", p.OpFilterMap(
 				"resource", map[string]string{
-					"memory": "limit.bytes",
+					"cpu":    "cpu.limit.cores",
+					"memory": "memory.limit.bytes",
 				},
 			)),
 		},
@@ -85,8 +87,20 @@ var (
 			},
 			{
 				Type:          easyops.AggregateTypeSum,
+				Field:         "pod.memory.request.bytes",
+				OriginMetrics: []string{"memory.request.bytes"},
+				GroupKeys:     []string{"_module.namespace", "_module.pod.name"},
+			},
+			{
+				Type:          easyops.AggregateTypeSum,
 				Field:         "pod.memory.limit.bytes",
 				OriginMetrics: []string{"memory.limit.bytes"},
+				GroupKeys:     []string{"_module.namespace", "_module.pod.name"},
+			},
+			{
+				Type:          easyops.AggregateTypeSum,
+				Field:         "pod.status.restarts",
+				OriginMetrics: []string{"status.restarts"},
 				GroupKeys:     []string{"_module.namespace", "_module.pod.name"},
 			},
 		},
