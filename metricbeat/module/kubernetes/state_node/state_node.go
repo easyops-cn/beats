@@ -69,9 +69,10 @@ var (
 					"memory": "memory.allocatable.bytes",
 				},
 			)),
-			"kube_node_status_capacity": p.Metric("cpu", p.OpFilterMap(
+			"kube_node_status_capacity": p.Metric("", p.OpFilterMap(
 				"resource", map[string]string{
-					"cpu": "capacity.cores",
+					"cpu":  "cpu.capacity.cores",
+					"pods": "pod.capacity.total",
 				},
 			)),
 		},

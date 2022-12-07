@@ -24,9 +24,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-
 	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/metricbeat/helper/prometheus"
+	"github.com/stretchr/testify/assert"
 )
 
 const testFile = "../_meta/test/stats_summary.json"
@@ -38,8 +38,9 @@ func TestEventMapping(t *testing.T) {
 	body, err := ioutil.ReadAll(f)
 	assert.NoError(t, err, "cannot read test file "+testFile)
 
-	event, err := eventMapping(body)
+	events, err := eventMapping(body, &prometheus.MetricsMapping{})
 	assert.NoError(t, err, "error mapping "+testFile)
+	assert.Equal(t, len(events), 1)
 
 	testCases := map[string]interface{}{
 		"cpu.usage.core.ns":   int64(4189523881380),
@@ -72,7 +73,7 @@ func TestEventMapping(t *testing.T) {
 	}
 
 	for k, v := range testCases {
-		testValue(t, event, k, v)
+		testValue(t, events[0], k, v)
 	}
 }
 
