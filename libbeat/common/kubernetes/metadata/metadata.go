@@ -152,10 +152,6 @@ func getClusterInfoFromKubeConfigFile(kubeconfig string) (ClusterInfo, error) {
 		kubeconfig = kubernetes.GetKubeConfigEnvironmentVariable()
 	}
 
-	if kubeconfig == "" {
-		return ClusterInfo{}, fmt.Errorf("unable to get cluster identifiers from kube_config from env")
-	}
-
 	cfg, err := kubernetes.BuildConfig(kubeconfig)
 	if err != nil {
 		return ClusterInfo{}, fmt.Errorf("unable to build kube config due to error: %+v", err)
