@@ -28,8 +28,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/pkg/errors"
-
 	sock "github.com/elastic/beats/v7/metricbeat/helper/socket"
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
@@ -120,7 +118,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 
 	sockets, err := m.netlink.GetSocketList()
 	if err != nil {
-		return errors.Wrap(err, "failed requesting socket dump")
+		return fmt.Errorf("failed requesting socket dump: %w", err)
 	}
 	debugf("netlink returned %d sockets", len(sockets))
 
