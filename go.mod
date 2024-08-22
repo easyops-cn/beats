@@ -144,29 +144,26 @@ require (
 	github.com/stretchr/testify v1.8.2
 	github.com/tsg/go-daemon v0.0.0-20200207173439-e704b93fd89b
 	github.com/ugorji/go/codec v1.1.8
-	github.com/urso/sderr v0.0.0-20210525210834-52b04e8f5c71
-	github.com/vmware/govmomi v0.0.0-20170802214208-2cad15190b41
-	github.com/xdg/scram v1.0.3
-	go.elastic.co/ecszap v1.0.1
-	go.elastic.co/go-licence-detector v0.5.0
-	go.etcd.io/bbolt v1.3.6
-	go.uber.org/atomic v1.10.0
-	go.uber.org/multierr v1.8.0
-	go.uber.org/zap v1.23.0
-	golang.org/x/crypto v0.0.0-20220525230936-793ad666bf5e
-	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616
-	golang.org/x/mod v0.5.1
-	golang.org/x/net v0.0.0-20220826154423-83b083e8dc8b
-	golang.org/x/oauth2 v0.0.0-20220822191816-0ebed06d0094
-	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde
-	golang.org/x/sys v0.6.0
-	golang.org/x/text v0.3.7
-	golang.org/x/time v0.0.0-20220609170525-579cf78fd858
-	golang.org/x/tools v0.1.9
-	google.golang.org/api v0.94.0
-	google.golang.org/genproto v0.0.0-20220829175752-36a9c930ecbf
-	google.golang.org/grpc v1.49.0
-	google.golang.org/protobuf v1.28.1
+	github.com/vmware/govmomi v0.39.0
+	go.elastic.co/ecszap v1.0.2
+	go.elastic.co/go-licence-detector v0.6.1
+	go.etcd.io/bbolt v1.3.10
+	go.uber.org/atomic v1.11.0 // indirect
+	go.uber.org/multierr v1.11.0
+	go.uber.org/zap v1.27.0
+	golang.org/x/crypto v0.25.0
+	golang.org/x/mod v0.19.0
+	golang.org/x/net v0.27.0
+	golang.org/x/oauth2 v0.22.0
+	golang.org/x/sync v0.8.0
+	golang.org/x/sys v0.22.0
+	golang.org/x/text v0.16.0
+	golang.org/x/time v0.6.0
+	golang.org/x/tools v0.23.0
+	google.golang.org/api v0.191.0
+	google.golang.org/genproto v0.0.0-20240730163845-b1a4ccb954bf // indirect
+	google.golang.org/grpc v1.64.1
+	google.golang.org/protobuf v1.34.2
 	gopkg.in/inf.v0 v0.9.1
 	gopkg.in/jcmturner/aescts.v1 v1.0.1 // indirect
 	gopkg.in/jcmturner/dnsutils.v1 v1.0.1 // indirect
