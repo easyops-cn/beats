@@ -31,6 +31,9 @@ https://github.com/elastic/beats/compare/v8.2.0\...main[Check the HEAD diff]
 - Add metrics for the vSphere Virtualmachine metricset. {pull}40485[40485]
 - Add new metrics for the vSphere Datastore metricset. {pull}40441[40441]
 - Update metrics for the vSphere Host metricset. {pull}40429[40429]
+- Mark system process metricsets as running if metrics are partially available {pull}40565[40565]
+- Added back `elasticsearch.node.stats.jvm.mem.pools.*` to the `node_stats` metricset {pull}40571[40571]
+- Add support for snapshot in vSphere virtualmachine metricset {pull}40683[40683]
 
 *Osquerybeat*
 
