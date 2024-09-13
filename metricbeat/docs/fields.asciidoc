@@ -64649,6 +64649,16 @@ type: keyword
 
 --
 
+*`vsphere.cluster.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
+
+--
+
 [float]
 === datastore
 
@@ -64802,6 +64812,16 @@ type: keyword
 
 --
 
+*`vsphere.datastore.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
+
+--
+
 *`vsphere.datastore.vm.count`*::
 +
 --
@@ -64892,6 +64912,16 @@ Number of datastores in the Datastore Cluster.
 
 
 type: long
+
+--
+
+*`vsphere.datastorecluster.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
 
 --
 
@@ -65252,6 +65282,16 @@ type: keyword
 
 --
 
+*`vsphere.host.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
+
+--
+
 *`vsphere.host.uptime`*::
 +
 --
@@ -65378,6 +65418,16 @@ Number of virtual machines connected to this network.
 
 
 type: long
+
+--
+
+*`vsphere.network.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
 
 --
 
@@ -65607,6 +65657,16 @@ type: keyword
 
 --
 
+*`vsphere.resourcepool.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
+
+--
+
 [float]
 === virtualmachine
 
@@ -65831,6 +65891,16 @@ type: object
 The number of snapshots of this virtualmachine.
 
 type: long
+
+--
+
+*`vsphere.virtualmachine.triggerd_alarms.*`*::
++
+--
+List of all the triggerd alarms.
+
+
+type: object
 
 --
 
