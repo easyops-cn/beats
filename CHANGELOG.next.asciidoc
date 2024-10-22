@@ -214,6 +214,11 @@ https://github.com/elastic/beats/compare/v8.2.0\...main[Check the HEAD diff]
 - Add support for period based intervalID in vSphere host and datastore metricsets {pull}40678[40678]
 - Add new metrics fot datastore and minor changes to overall vSphere metrics {pull}40766[40766]
 - Add `metrics_count` to Prometheus module if `metrics_count: true` is set. {pull}40411[40411]
+- Added Cisco Meraki module {pull}40836[40836]
+- Added Palo Alto Networks module {pull}40686[40686]
+- Restore docker.network.in.* and docker.network.out.* fields in docker module {pull}40968[40968]
+- Add `id` field to all the vSphere metricsets. {pull}41097[41097]
+- Only watch metadata for ReplicaSets in metricbeat k8s module {pull}41289[41289]
 
 *Metricbeat*
 
