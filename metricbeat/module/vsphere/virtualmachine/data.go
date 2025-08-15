@@ -28,8 +28,14 @@ func (m *MetricSet) mapEvent(data VMData) mapstr.M {
 	totalCPU := data.VM.Summary.Config.CpuReservation
 	totalMemory := int64(data.VM.Summary.Config.MemorySizeMB) * bytesMultiplier
 
-	freeCPU := max(0, totalCPU-usedCPU)
-	freeMemory := max(0, totalMemory-usedMemory)
+	freeCPU := totalCPU - usedCPU
+	freeMemory := totalMemory - usedMemory
+	if freeCPU < 0 {
+		freeCPU = 0
+	}
+	if freeMemory < 0 {
+		freeMemory = 0
+	}
 
 	event := mapstr.M{
 		"name":          data.VM.Summary.Config.Name,
