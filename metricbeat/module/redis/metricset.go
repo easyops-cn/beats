@@ -26,6 +26,7 @@ import (
 	rd "github.com/gomodule/redigo/redis"
 
 	"github.com/elastic/beats/v7/metricbeat/mb"
+	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
 )
 
@@ -51,7 +52,7 @@ func NewMetricSet(base mb.BaseMetricSet) (*MetricSet, error) {
 	}
 
 	if config.TLS.IsEnabled() {
-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
+		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("redis"))
 		if err != nil {
 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
 		}

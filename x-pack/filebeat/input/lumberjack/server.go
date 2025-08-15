@@ -131,7 +131,7 @@ func newLumberjack(c config) (lj lumber.Server, bindAddress string, err error) {
 	// Setup optional TLS.
 	var tlsConfig *tls.Config
 	if c.TLS.IsEnabled() {
-		elasticTLSConfig, err := tlscommon.LoadTLSServerConfig(c.TLS)
+		elasticTLSConfig, err := tlscommon.LoadTLSServerConfig(c.TLS, logp.NewLogger("lumberjack"))
 		if err != nil {
 			return nil, "", err
 		}

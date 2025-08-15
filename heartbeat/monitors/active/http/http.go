@@ -25,6 +25,7 @@ import (
 	"github.com/elastic/beats/v7/heartbeat/monitors/plugin"
 	"github.com/elastic/beats/v7/libbeat/version"
 	conf "github.com/elastic/elastic-agent-libs/config"
+	"github.com/elastic/elastic-agent-libs/logp"
 
 	"github.com/elastic/beats/v7/heartbeat/monitors/jobs"
 	"github.com/elastic/beats/v7/heartbeat/monitors/wrappers"
@@ -91,7 +92,7 @@ func create(
 		}
 	} else {
 		// preload TLS configuration
-		tls, err := tlscommon.LoadTLSConfig(config.Transport.TLS)
+		tls, err := tlscommon.LoadTLSConfig(config.Transport.TLS, logp.NewLogger("http"))
 		if err != nil {
 			return plugin.Plugin{}, err
 		}

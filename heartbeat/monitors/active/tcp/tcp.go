@@ -101,7 +101,7 @@ func (jf *jobFactory) loadConfig(commonCfg *conf.C) error {
 		return err
 	}
 
-	jf.tlsConfig, err = tlscommon.LoadTLSConfig(jf.config.TLS)
+	jf.tlsConfig, err = tlscommon.LoadTLSConfig(jf.config.TLS, logp.NewLogger("tcp"))
 	if err != nil {
 		return err
 	}

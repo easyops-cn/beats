@@ -101,7 +101,7 @@ func makeShipper(
 
 // Connect establishes connection to the shipper server and implements `outputs.Connectable`.
 func (s *shipper) Connect() error {
-	tls, err := tlscommon.LoadTLSConfig(s.config.TLS)
+	tls, err := tlscommon.LoadTLSConfig(s.config.TLS, logp.NewLogger("shipper"))
 	if err != nil {
 		return fmt.Errorf("invalid shipper TLS configuration: %w", err)
 	}

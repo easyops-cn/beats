@@ -18,6 +18,7 @@
 package dialchain
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -39,12 +40,12 @@ import (
 //
 // The dialer will update the active events with:
 //
-//  {
-//    "tcp": {
-//      "port": ...,
-//      "rtt": { "connect": { "us": ... }}
-//    }
-//  }
+//	{
+//	  "tcp": {
+//	    "port": ...,
+//	    "rtt": { "connect": { "us": ... }}
+//	  }
+//	}
 func TCPDialer(to time.Duration) NetDialer {
 	return CreateNetDialer(to)
 }
@@ -56,12 +57,12 @@ func TCPDialer(to time.Duration) NetDialer {
 //
 // The dialer will update the active events with:
 //
-//  {
-//    "udp": {
-//      "port": ...,
-//      "rtt": { "connect": { "us": ... }}
-//    }
-//  }
+//	{
+//	  "udp": {
+//	    "port": ...,
+//	    "rtt": { "connect": { "us": ... }}
+//	  }
+//	}
 func UDPDialer(to time.Duration) NetDialer {
 	return CreateNetDialer(to)
 }
@@ -100,7 +101,7 @@ func CreateNetDialer(timeout time.Duration) NetDialer {
 			dialer := &net.Dialer{Timeout: timeout}
 
 			start := time.Now()
-			conn, err := transport.DialWith(dialer, network, host, addresses, port)
+			conn, err := transport.DialWith(context.Background(), dialer, network, host, addresses, port)
 			if err != nil {
 				return nil, ecserr.NewCouldNotConnectErr(host, port, err)
 			}

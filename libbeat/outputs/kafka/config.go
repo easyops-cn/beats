@@ -194,7 +194,7 @@ func newSaramaConfig(log *logp.Logger, config *kafkaConfig) (*sarama.Config, err
 	k.Producer.Timeout = config.BrokerTimeout
 	k.Producer.CompressionLevel = config.CompressionLevel
 
-	tls, err := tlscommon.LoadTLSConfig(config.TLS)
+	tls, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("kafka"))
 	if err != nil {
 		return nil, err
 	}

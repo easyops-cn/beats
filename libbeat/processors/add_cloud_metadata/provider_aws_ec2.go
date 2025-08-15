@@ -51,7 +51,7 @@ func getIMDSv2Token(c *conf.C) string {
 		return ""
 	}
 
-	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
+	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("add_cloud_metadata"))
 	if err != nil {
 		logger.Warnf("error when load TLS config for getting IMDSv2 token: %s. No token in the metadata request will be used.", err)
 		return ""

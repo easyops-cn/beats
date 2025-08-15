@@ -31,6 +31,7 @@ import (
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
 
+	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
 )
 
@@ -173,7 +174,7 @@ func NewClient(config ModuleConfig, timeout time.Duration, mode readpref.Mode) (
 	clientOptions.SetConnectTimeout(timeout)
 
 	if config.TLS.IsEnabled() {
-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
+		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("mongodb"))
 		if err != nil {
 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
 		}

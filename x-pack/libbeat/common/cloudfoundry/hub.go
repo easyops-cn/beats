@@ -129,7 +129,7 @@ func (h *Hub) DopplerConsumerFromClient(client *cfclient.Client, callbacks Doppl
 	if dopplerAddress == "" {
 		dopplerAddress = client.Endpoint.DopplerEndpoint
 	}
-	tlsConfig, err := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS)
+	tlsConfig, err := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS, logp.NewLogger("cloudfoundry"))
 	if err != nil {
 		return nil, fmt.Errorf("loading tls config: %w", err)
 	}
@@ -159,6 +159,6 @@ func (h *Hub) httpClient() (*http.Client, bool, error) {
 		return nil, false, err
 	}
 
-	tls, _ := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS)
+	tls, _ := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS, logp.NewLogger("cloudfoundry"))
 	return httpClient, tls.ToConfig().InsecureSkipVerify, nil
 }

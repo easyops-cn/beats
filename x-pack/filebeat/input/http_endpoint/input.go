@@ -55,7 +55,7 @@ func newHTTPEndpoint(config config) (*httpEndpoint, error) {
 	addr := fmt.Sprintf("%v:%v", config.ListenAddress, config.ListenPort)
 
 	var tlsConfig *tls.Config
-	tlsConfigBuilder, err := tlscommon.LoadTLSServerConfig(config.TLS)
+	tlsConfigBuilder, err := tlscommon.LoadTLSServerConfig(config.TLS, logp.NewLogger("http_endpoint"))
 	if err != nil {
 		return nil, err
 	}

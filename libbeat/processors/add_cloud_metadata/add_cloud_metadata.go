@@ -66,7 +66,7 @@ func New(c *cfg.C) (processors.Processor, error) {
 		return nil, errors.Wrap(err, "failed to unpack add_cloud_metadata config")
 	}
 
-	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
+	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("add_cloud_metadata"))
 	if err != nil {
 		return nil, errors.Wrap(err, "TLS configuration load")
 	}

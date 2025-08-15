@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 
 	"github.com/elastic/beats/v7/metricbeat/mb"
+	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
 )
 
@@ -42,7 +43,7 @@ func NewMetricSet(base mb.BaseMetricSet, options MetricSetOptions) (*MetricSet, 
 		return nil, err
 	}
 
-	tlsCfg, err := tlscommon.LoadTLSConfig(config.TLS)
+	tlsCfg, err := tlscommon.LoadTLSConfig(config.TLS, logp.NewLogger("kafka"))
 	if err != nil {
 		return nil, err
 	}
