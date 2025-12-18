@@ -22,6 +22,19 @@ import (
 	"github.com/elastic/elastic-agent-system-metrics/metric/system/process"
 )
 
+// ProcessCheckItem represents a process check configuration item
+type ProcessCheckItem struct {
+	Cmdline string   `config:"cmdline"` // Process command line (for exact matching)
+	Ports   []string `config:"ports"`   // Process port list
+}
+
+// ArtifactInstCheck represents deployment instance check configuration
+type ArtifactInstCheck struct {
+	InstanceId        string             `config:"instanceId"`        // Instance ID
+	CheckProcessNames []string           `config:"checkProcessNames"` // Process name check list (full match)
+	ProcessList       []ProcessCheckItem `config:"processList"`       // Process list (cmdline + port check)
+}
+
 // Config stores the system/process config options
 type Config struct {
 	Procs           []string                 `config:"processes"`
@@ -31,8 +44,9 @@ type Config struct {
 	IncludeTop      process.IncludeTopConfig `config:"process.include_top_n"`
 	IncludeCPUTicks bool                     `config:"process.include_cpu_ticks"`
 	IncludePerCPU   bool                     `config:"process.include_per_cpu"`
-	CPUTicks        *bool                    `config:"cpu_ticks"` // Deprecated
-	CheckCmdlines   []string                 `config:"process.cmdline.check"`
+	CPUTicks        *bool                    `config:"cpu_ticks"`             // Deprecated
+	CheckCmdlines   []string                 `config:"process.cmdline.check"` // Retained for compatibility
+	ArtifactInsts   []ArtifactInstCheck      `config:"artifactInsts"`         // Multi-instance configuration
 }
 
 // Validate checks for depricated config options
@@ -52,5 +66,6 @@ var defaultConfig = Config{
 		ByMemory: 0,
 	},
 	IncludePerCPU: true,
-	CheckCmdlines: []string{}, // empty array means no additional checking for process alive
+	CheckCmdlines: []string{},            // empty array means no additional checking for process alive
+	ArtifactInsts: []ArtifactInstCheck{}, // empty array for backward compatibility
 }
