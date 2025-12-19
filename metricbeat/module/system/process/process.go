@@ -472,7 +472,12 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
 		var ports []string
 
 		// Extract process name
-		if nameVal, err := proc.GetValue("process.name"); err == nil {
+		// Try multiple possible field paths: system.process.name (metricbeat format) or process.name (ECS format)
+		nameVal, err := proc.GetValue("system.process.name")
+		if err != nil {
+			nameVal, err = proc.GetValue("process.name")
+		}
+		if err == nil {
 			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
 				name = nameStr
 				data.ProcessNames[nameStr] = true
@@ -486,7 +491,23 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
 		}
 
 		// Extract ports (requires PID)
-		if pidVal, err := proc.GetValue("process.pid"); err == nil {
+		// Try multiple possible PID field paths (priority: system.process.pid first, as per metricbeat format)
+		pidVal, err := proc.GetValue("system.process.pid")
+		if err != nil {
+			// Fallback to process.pid (ECS format)
+			if pidVal2, err2 := proc.GetValue("process.pid"); err2 == nil {
+				pidVal = pidVal2
+			} else {
+				// Try direct "pid" field
+				if pidVal3, err3 := proc.GetValue("pid"); err3 == nil {
+					pidVal = pidVal3
+				} else {
+					fileDebugf("  [%d] PID not found in system.process.pid, process.pid, or pid", idx)
+				}
+			}
+		}
+
+		if pidVal != nil {
 			pid = pidVal
 			var pidInt int
 			switch v := pidVal.(type) {
@@ -500,12 +521,27 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
 				pidInt = int(v)
 			default:
 				fileDebugf("  [%d] Skipped unsupported PID type: %T, value=%v", idx, v, v)
-				continue // Skip if type is not supported
+				// Don't continue, just skip port extraction for this process
 			}
-			ports = m.getProcessPorts(pidInt)
-			for _, port := range ports {
-				data.Ports[port] = true
+
+			if pidInt > 0 {
+				ports = m.getProcessPorts(pidInt)
+				if len(ports) > 0 {
+					fileDebugf("  [%d] Found %d ports for PID %d: %v", idx, len(ports), pidInt, ports)
+					for _, port := range ports {
+						data.Ports[port] = true
+					}
+				} else {
+					// Debug: check if PID exists in pidToPorts
+					if _, exists := m.pidToPorts[pidInt]; !exists {
+						fileDebugf("  [%d] PID %d not found in pidToPorts (total PIDs in map: %d)", idx, pidInt, len(m.pidToPorts))
+					} else {
+						fileDebugf("  [%d] PID %d exists in pidToPorts but ports list is empty", idx, pidInt)
+					}
+				}
 			}
+		} else {
+			fileDebugf("  [%d] PID is nil, cannot extract ports", idx)
 		}
 
 		processedCount++
@@ -527,14 +563,29 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
 
 // extractCmdline extracts command line from process data (helper method, handles multiple cases)
 func (m *MetricSet) extractCmdline(proc mapstr.M) string {
-	// Prefer command_line
-	if cmdline, err := proc.GetValue("process.command_line"); err == nil {
-		if cmdlineStr, ok := cmdline.(string); ok {
-			return cmdlineStr
+	// Try multiple possible field paths for cmdline
+	// Priority order:
+	// 1. process.command_line (ECS standard)
+	// 2. system.process.cmdline (metricbeat system.process specific)
+	// 3. process.cmdline (alternative)
+	// 4. process.args (fallback: construct from args array)
+
+	fieldPaths := []string{
+		"system.process.cmdline", // metricbeat format (priority 1)
+		"process.cmdline",        // alternative
+		"process.command_line",   // ECS standard
+	}
+
+	for _, path := range fieldPaths {
+		if cmdline, err := proc.GetValue(path); err == nil {
+			if cmdlineStr, ok := cmdline.(string); ok && cmdlineStr != "" {
+				fileDebugf("extractCmdline: extracted from %s, length=%d", path, len(cmdlineStr))
+				return cmdlineStr
+			}
+			fileDebugf("extractCmdline: %s exists but not valid string, type=%T, value=%v", path, cmdline, cmdline)
+		} else {
+			fileDebugf("extractCmdline: %s not found", path)
 		}
-		fileDebugf("extractCmdline: process.command_line exists but not string, type=%T", cmdline)
-	} else {
-		fileDebugf("extractCmdline: process.command_line not found, trying args")
 	}
 
 	// Fallback: use args concatenation
@@ -563,6 +614,34 @@ func (m *MetricSet) extractCmdline(proc mapstr.M) string {
 		}
 	} else {
 		fileDebugf("extractCmdline: process.args not found")
+	}
+
+	// Debug: log all available keys in proc for first few processes
+	// Try to get nested process keys
+	if processVal, err := proc.GetValue("process"); err == nil {
+		if processMap, ok := processVal.(map[string]interface{}); ok {
+			procKeys := make([]string, 0, 10)
+			for k := range processMap {
+				if len(procKeys) < 10 {
+					procKeys = append(procKeys, k)
+				}
+			}
+			fileDebugf("extractCmdline: available process.* keys (first 10): %v", procKeys)
+		}
+	}
+	// Try to get nested system.process keys
+	if systemVal, err := proc.GetValue("system"); err == nil {
+		if systemMap, ok := systemVal.(map[string]interface{}); ok {
+			if processVal, ok := systemMap["process"].(map[string]interface{}); ok {
+				sysProcKeys := make([]string, 0, 10)
+				for k := range processVal {
+					if len(sysProcKeys) < 10 {
+						sysProcKeys = append(sysProcKeys, k)
+					}
+				}
+				fileDebugf("extractCmdline: available system.process.* keys (first 10): %v", sysProcKeys)
+			}
+		}
 	}
 
 	fileDebugf("extractCmdline: no cmdline extracted, returning empty string")
