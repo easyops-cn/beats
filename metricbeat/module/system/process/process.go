@@ -257,15 +257,34 @@ func (m *MetricSet) getPortFromEndpoint(endpoint interface{}) uint16 {
 	if v.Kind() == reflect.Struct {
 		// Get the port field (unexported, so we need to use unsafe)
 		portField := v.FieldByName("port")
-		if portField.IsValid() && portField.CanInterface() {
+		if !portField.IsValid() {
+			return 0
+		}
+
+		// Try to get value through Interface() first (safer)
+		if portField.CanInterface() {
 			if port, ok := portField.Interface().(uint16); ok {
 				return port
 			}
 		}
-		// If CanInterface() returns false, use unsafe to access the field
-		if portField.IsValid() {
-			// Use unsafe to read the uint16 value
-			portPtr := unsafe.Pointer(portField.UnsafeAddr())
+
+		// If CanInterface() returns false, we need to use unsafe
+		// But first, we need to make sure the value is addressable
+		// If not, create a copy
+		var addrValue reflect.Value
+		if portField.CanAddr() {
+			addrValue = portField
+		} else {
+			// Create an addressable copy of the struct
+			// This happens when endpoint comes from a map range (unaddressable)
+			structCopy := reflect.New(v.Type()).Elem()
+			structCopy.Set(v)
+			addrValue = structCopy.FieldByName("port")
+		}
+
+		// Now we can safely use UnsafeAddr()
+		if addrValue.IsValid() && addrValue.CanAddr() {
+			portPtr := unsafe.Pointer(addrValue.UnsafeAddr())
 			return *(*uint16)(portPtr)
 		}
 	}
@@ -366,11 +385,22 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
 
 		// Extract ports (requires PID)
 		if pid, err := proc.GetValue("process.pid"); err == nil {
-			if pidInt, ok := pid.(int); ok {
-				ports := m.getProcessPorts(pidInt)
-				for _, port := range ports {
-					data.Ports[port] = true
-				}
+			var pidInt int
+			switch v := pid.(type) {
+			case int:
+				pidInt = v
+			case int64:
+				pidInt = int(v)
+			case int32:
+				pidInt = int(v)
+			case float64:
+				pidInt = int(v)
+			default:
+				continue // Skip if type is not supported
+			}
+			ports := m.getProcessPorts(pidInt)
+			for _, port := range ports {
+				data.Ports[port] = true
 			}
 		}
 	}
