@@ -387,7 +387,8 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	fileDebugf("Fetch: retrieved %d processes", len(procs))
 
 	// Build alive process data structure (performance optimization)
-	aliveData := m.buildAliveProcessData(procs)
+	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
+	aliveData := m.buildAliveProcessData(procs, roots)
 
 	// Iterate through each instance and perform liveness check
 	fileDebugf("Fetch: checking %d instances for liveness", len(m.artifactInsts))
@@ -461,49 +462,78 @@ func (m *MetricSet) needPortCheck() bool {
 }
 
 // buildAliveProcessData builds alive process data structure (performance optimization core method)
-func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
+// procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
+func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *AliveProcessData {
 	data := NewAliveProcessData()
 	fileDebugf("Building alive process data from %d processes", len(procs))
 
 	processedCount := 0
 	for idx, proc := range procs {
+		// Get corresponding root fields (contains process.* ECS fields)
+		var root mapstr.M
+		if idx < len(roots) {
+			root = roots[idx]
+		}
 		var pid interface{}
 		var name, cmdline string
 		var ports []string
 
 		// Extract process name
-		// Try multiple possible field paths: system.process.name (metricbeat format) or process.name (ECS format)
-		nameVal, err := proc.GetValue("system.process.name")
-		if err != nil {
-			nameVal, err = proc.GetValue("process.name")
+		// Priority: process.name from root (ECS format), then system.process.name from proc (metricbeat format)
+		if root != nil {
+			if nameVal, err := root.GetValue("process.name"); err == nil {
+				if nameStr, ok := nameVal.(string); ok && nameStr != "" {
+					name = nameStr
+					data.ProcessNames[nameStr] = true
+				}
+			}
 		}
-		if err == nil {
-			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
-				name = nameStr
-				data.ProcessNames[nameStr] = true
+		// Fallback to system.process.name from MetricSetFields
+		if name == "" {
+			if nameVal, err := proc.GetValue("system.process.name"); err == nil {
+				if nameStr, ok := nameVal.(string); ok && nameStr != "" {
+					name = nameStr
+					data.ProcessNames[nameStr] = true
+				}
 			}
 		}
 
 		// Extract command line
-		cmdline = m.extractCmdline(proc)
-		if cmdline != "" {
-			data.Cmdlines[cmdline] = true
+		// Priority: process.command_line from root (ECS format), then system.process.cmdline from proc (metricbeat format)
+		if root != nil {
+			if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
+				if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
+					cmdline = cmdlineStr
+					data.Cmdlines[cmdline] = true
+				}
+			}
+		}
+		// Fallback to system.process.cmdline from MetricSetFields
+		if cmdline == "" {
+			cmdline = m.extractCmdline(proc)
+			if cmdline != "" {
+				data.Cmdlines[cmdline] = true
+			}
 		}
 
 		// Extract ports (requires PID)
-		// Try multiple possible PID field paths (priority: system.process.pid first, as per metricbeat format)
-		pidVal, err := proc.GetValue("system.process.pid")
+		// Priority: process.pid from root (ECS format), then system.process.pid from proc (metricbeat format)
+		var pidVal interface{}
+		var err error
+		if root != nil {
+			pidVal, err = root.GetValue("process.pid")
+		}
 		if err != nil {
-			// Fallback to process.pid (ECS format)
-			if pidVal2, err2 := proc.GetValue("process.pid"); err2 == nil {
-				pidVal = pidVal2
-			} else {
-				// Try direct "pid" field
-				if pidVal3, err3 := proc.GetValue("pid"); err3 == nil {
-					pidVal = pidVal3
-				} else {
-					fileDebugf("  [%d] PID not found in system.process.pid, process.pid, or pid", idx)
-				}
+			// Fallback to system.process.pid from MetricSetFields
+			pidVal, err = proc.GetValue("system.process.pid")
+		}
+		if err != nil {
+			// Try direct "pid" field as last resort
+			if root != nil {
+				pidVal, err = root.GetValue("pid")
+			}
+			if err != nil {
+				fileDebugf("  [%d] PID not found in root.process.pid, proc.system.process.pid, or root.pid", idx)
 			}
 		}
 
