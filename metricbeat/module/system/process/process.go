@@ -255,8 +255,8 @@ func (m *MetricSet) needPortCollection() bool {
 func (m *MetricSet) buildCmdlineToInstIdIndex() {
 	fileDebugf("Building cmdlineToInstId index, total instances: %d", len(m.artifactInsts))
 	for _, inst := range m.artifactInsts {
-		fileDebugf("Processing instance: instanceId=%s, checkProcessNames=%v, processList_count=%d",
-			inst.InstanceId, inst.CheckProcessNames, len(inst.ProcessList))
+		fileDebugf("Processing instance: instanceId=%s, processMatchFields=%v, processList_count=%d",
+			inst.InstanceId, inst.ProcessMatchFields, len(inst.ProcessList))
 		for i, proc := range inst.ProcessList {
 			if proc.Cmdline != "" {
 				m.cmdlineToInstId[proc.Cmdline] = inst.InstanceId
@@ -438,16 +438,6 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	withInstanceIdCount := 0
 	withoutInstanceIdCount := 0
 	for i := range procs {
-		// Ensure alive_state field exists and is string type for normal processes
-		// Convert existing numeric value to string, or set "0" if not exists
-		if existingValue, exists := procs[i]["alive_state"]; exists {
-			// Convert existing value to string (handles int, int64, float64, etc.)
-			procs[i].Put("alive_state", fmt.Sprintf("%v", existingValue))
-		} else {
-			// Add alive_state field for normal processes (0 = normal, string type for database compatibility)
-			procs[i].Put("alive_state", "0")
-		}
-
 		// Ensure instanceId is in RootFields for dimension matching
 		if instanceId, exists := procs[i]["instanceId"]; exists {
 			if roots[i] == nil {
@@ -618,18 +608,18 @@ func (m *MetricSet) checkInstanceAlive(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	fileDebugf("checkInstanceAlive: starting check for instanceId=%s, checkProcessNames_count=%d, processList_count=%d",
-		inst.InstanceId, len(inst.CheckProcessNames), len(inst.ProcessList))
+	fileDebugf("checkInstanceAlive: starting check for instanceId=%s, processMatchFields_count=%d, processList_count=%d",
+		inst.InstanceId, len(inst.ProcessMatchFields), len(inst.ProcessList))
 	fileDebugf("  Available alive data: names=%d, cmdlines=%d, ports=%d",
 		len(aliveData.ProcessNames), len(aliveData.Cmdlines), len(aliveData.Ports))
 
 	var deadProcs []DeadProcessInfo
 	checkStartTime := time.Now()
 
-	// Branch A: checkProcessNames is not empty (higher priority)
-	if len(inst.CheckProcessNames) > 0 {
-		fileDebugf("checkInstanceAlive: using Branch A (checkProcessNames) for instanceId=%s", inst.InstanceId)
-		deadProcs = m.checkProcessNames(inst, aliveData)
+	// Branch A: processMatchFields is not empty (higher priority)
+	if len(inst.ProcessMatchFields) > 0 {
+		fileDebugf("checkInstanceAlive: using Branch A (processMatchFields) for instanceId=%s", inst.InstanceId)
+		deadProcs = m.checkProcessMatchFields(inst, aliveData)
 	} else {
 		// Branch B: check processList
 		fileDebugf("checkInstanceAlive: using Branch B (processList) for instanceId=%s", inst.InstanceId)
@@ -642,52 +632,57 @@ func (m *MetricSet) checkInstanceAlive(
 	return deadProcs
 }
 
-// checkProcessNames checks process names (Branch A)
-func (m *MetricSet) checkProcessNames(
+// checkProcessMatchFields checks process match fields against cmdlines (Branch A)
+func (m *MetricSet) checkProcessMatchFields(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	fileDebugf("checkProcessNames: checking %d process names for instanceId=%s, alive_processes=%d",
-		len(inst.CheckProcessNames), inst.InstanceId, len(aliveData.ProcessNames))
+	fileDebugf("checkProcessMatchFields: checking %d process match fields for instanceId=%s, alive_cmdlines=%d",
+		len(inst.ProcessMatchFields), inst.InstanceId, len(aliveData.Cmdlines))
 
 	var deadProcs []DeadProcessInfo
 
-	for i, checkName := range inst.CheckProcessNames {
-		if checkName == "" {
-			fileDebugf("  [%d] Skipped empty checkName", i)
+	for i, matchField := range inst.ProcessMatchFields {
+		if matchField == "" {
+			fileDebugf("  [%d] Skipped empty matchField", i)
 			continue // Skip empty strings
 		}
 
-		isAlive := m.isProcessNameAlive(checkName, aliveData.ProcessNames)
-		fileDebugf("  [%d] checkName=%s, isAlive=%v", i, checkName, isAlive)
+		isAlive := m.isCmdlineContains(matchField, aliveData.Cmdlines)
+		fileDebugf("  [%d] matchField=%s, isAlive=%v", i, matchField, isAlive)
 
 		if !isAlive {
-			fileDebugf("  [%d] Process name NOT found: checkName=%s, instanceId=%s", i, checkName, inst.InstanceId)
+			fileDebugf("  [%d] Match field NOT found in any cmdline: matchField=%s, instanceId=%s", i, matchField, inst.InstanceId)
 			deadProcs = append(deadProcs, DeadProcessInfo{
 				InstanceId: inst.InstanceId,
-				Identifier: checkName,
+				Identifier: matchField,
 			})
 		} else {
-			fileDebugf("  [%d] Process name found alive: checkName=%s", i, checkName)
+			fileDebugf("  [%d] Match field found in cmdline: matchField=%s", i, matchField)
 		}
 	}
 
-	fileDebugf("checkProcessNames: completed for instanceId=%s, found %d dead processes", inst.InstanceId, len(deadProcs))
+	fileDebugf("checkProcessMatchFields: completed for instanceId=%s, found %d dead processes", inst.InstanceId, len(deadProcs))
 	return deadProcs
 }
 
-// isProcessNameAlive checks if a process name is alive (helper method, supports contains matching)
-func (m *MetricSet) isProcessNameAlive(checkName string, aliveNames map[string]bool) bool {
+// isCmdlineContains checks if any cmdline contains the match field (helper method)
+func (m *MetricSet) isCmdlineContains(matchField string, aliveCmdlines map[string]bool) bool {
 	checkedCount := 0
-	for aliveName := range aliveNames {
+	for cmdline := range aliveCmdlines {
 		checkedCount++
-		if strings.Contains(aliveName, checkName) {
-			fileDebugf("    isProcessNameAlive: MATCH found! checkName=%s, matched_aliveName=%s (checked %d names)",
-				checkName, aliveName, checkedCount)
+		if strings.Contains(cmdline, matchField) {
+			fileDebugf("    isCmdlineContains: MATCH found! matchField=%s, matched_cmdline_len=%d (checked %d cmdlines)",
+				matchField, len(cmdline), checkedCount)
+			if len(cmdline) > 100 {
+				fileDebugf("      cmdline_preview=%s...", cmdline[:100])
+			} else {
+				fileDebugf("      cmdline=%s", cmdline)
+			}
 			return true // Found match, return immediately
 		}
 	}
-	fileDebugf("    isProcessNameAlive: NO match for checkName=%s (checked %d names)", checkName, checkedCount)
+	fileDebugf("    isCmdlineContains: NO match for matchField=%s (checked %d cmdlines)", matchField, checkedCount)
 	return false
 }
 
@@ -819,7 +814,7 @@ func (m *MetricSet) addInstanceIdDimension(
 // buildDeadProcessEvent builds an event for a dead/abnormal process
 func (m *MetricSet) buildDeadProcessEvent(deadProc DeadProcessInfo) mb.Event {
 	metricSetFields := mapstr.M{
-		"alive_state": "1", // "1" indicates abnormal (use string type for database compatibility)
+		"alive_state": int64(1), // 1 indicates abnormal
 	}
 
 	rootFields := mapstr.M{
