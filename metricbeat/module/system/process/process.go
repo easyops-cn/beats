@@ -438,6 +438,16 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	withInstanceIdCount := 0
 	withoutInstanceIdCount := 0
 	for i := range procs {
+		// Ensure alive_state field exists and is string type for normal processes
+		// Convert existing numeric value to string, or set "0" if not exists
+		if existingValue, exists := procs[i]["alive_state"]; exists {
+			// Convert existing value to string (handles int, int64, float64, etc.)
+			procs[i].Put("alive_state", fmt.Sprintf("%v", existingValue))
+		} else {
+			// Add alive_state field for normal processes (0 = normal, string type for database compatibility)
+			procs[i].Put("alive_state", "0")
+		}
+
 		// Ensure instanceId is in RootFields for dimension matching
 		if instanceId, exists := procs[i]["instanceId"]; exists {
 			if roots[i] == nil {
@@ -449,6 +459,11 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 				fileDebugf("  [%d] Reporting normal process with instanceId=%s", i, instanceId)
 			}
 		} else {
+			// Ensure instanceId exists in RootFields even if empty (for frontend compatibility)
+			if roots[i] == nil {
+				roots[i] = mapstr.M{}
+			}
+			roots[i].Put("instanceId", "")
 			withoutInstanceIdCount++
 			if i < 5 {
 				fileDebugf("  [%d] Reporting normal process without instanceId", i)
@@ -503,76 +518,46 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 
 	// Statistics for debugging
 	stats := struct {
-		nameFromRoot    int
-		nameFromProc    int
+		nameFound       int
 		nameNotFound    int
-		cmdlineFromRoot int
-		cmdlineFromProc int
+		cmdlineFound    int
 		cmdlineNotFound int
-		pidFromRoot     int
-		pidFromProc     int
+		pidFound        int
 		pidNotFound     int
 		portsFound      int
 		portsNotFound   int
 	}{}
 
-	processedCount := 0
-	for idx, proc := range procs {
+	for idx := range procs {
 		// Get corresponding root fields (contains process.* ECS fields)
 		var root mapstr.M
 		if idx < len(roots) {
 			root = roots[idx]
 		}
-		var pid interface{}
+		if root == nil {
+			continue // Skip if no root fields
+		}
+
 		var name, cmdline string
 		var ports []string
-		var nameSource, cmdlineSource, pidSource string
 
-		// Extract process name
-		// Priority: process.name from root (ECS format), then system.process.name from proc (metricbeat format)
-		if root != nil {
-			if nameVal, err := root.GetValue("process.name"); err == nil {
-				if nameStr, ok := nameVal.(string); ok && nameStr != "" {
-					name = nameStr
-					nameSource = "root.process.name"
-					stats.nameFromRoot++
-					data.ProcessNames[nameStr] = true
-				}
-			}
-		}
-		// Fallback to system.process.name from MetricSetFields
-		if name == "" {
-			if nameVal, err := proc.GetValue("system.process.name"); err == nil {
-				if nameStr, ok := nameVal.(string); ok && nameStr != "" {
-					name = nameStr
-					nameSource = "proc.system.process.name"
-					stats.nameFromProc++
-					data.ProcessNames[nameStr] = true
-				}
+		// Extract process name from root (ECS format)
+		if nameVal, err := root.GetValue("process.name"); err == nil {
+			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
+				name = nameStr
+				stats.nameFound++
+				data.ProcessNames[nameStr] = true
 			}
 		}
 		if name == "" {
 			stats.nameNotFound++
 		}
 
-		// Extract command line
-		// Priority: process.command_line from root (ECS format), then system.process.cmdline from proc (metricbeat format)
-		if root != nil {
-			if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
-				if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
-					cmdline = cmdlineStr
-					cmdlineSource = "root.process.command_line"
-					stats.cmdlineFromRoot++
-					data.Cmdlines[cmdline] = true
-				}
-			}
-		}
-		// Fallback to system.process.cmdline from MetricSetFields
-		if cmdline == "" {
-			cmdline = m.extractCmdline(proc)
-			if cmdline != "" {
-				cmdlineSource = "proc.system.process.cmdline"
-				stats.cmdlineFromProc++
+		// Extract command line from root (ECS format)
+		if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
+			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
+				cmdline = cmdlineStr
+				stats.cmdlineFound++
 				data.Cmdlines[cmdline] = true
 			}
 		}
@@ -580,196 +565,52 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 			stats.cmdlineNotFound++
 		}
 
-		// Extract ports (requires PID)
-		// Priority: process.pid from root (ECS format), then system.process.pid from proc (metricbeat format)
-		var pidVal interface{}
-		var err error
-		if root != nil {
-			pidVal, err = root.GetValue("process.pid")
-			if err == nil {
-				pidSource = "root.process.pid"
-				stats.pidFromRoot++
-			}
-		}
-		if err != nil {
-			// Fallback to system.process.pid from MetricSetFields
-			pidVal, err = proc.GetValue("system.process.pid")
-			if err == nil {
-				pidSource = "proc.system.process.pid"
-				stats.pidFromProc++
-			}
-		}
+		// Extract PID from root (ECS format)
+		pidVal, err := root.GetValue("process.pid")
 		if err != nil {
 			// Try direct "pid" field as last resort
-			if root != nil {
-				pidVal, err = root.GetValue("pid")
-				if err == nil {
-					pidSource = "root.pid"
-					stats.pidFromProc++ // Count as proc source for stats
-				}
-			}
-			if err != nil {
-				stats.pidNotFound++
-				if idx < 10 {
-					fileDebugf("  [%d] PID not found in root.process.pid, proc.system.process.pid, or root.pid", idx)
-				}
-			}
+			pidVal, err = root.GetValue("pid")
+		}
+		if err != nil {
+			stats.pidNotFound++
+			continue // Skip port extraction if no PID
+		}
+		stats.pidFound++
+
+		var pidInt int
+		switch v := pidVal.(type) {
+		case int:
+			pidInt = v
+		case int64:
+			pidInt = int(v)
+		case int32:
+			pidInt = int(v)
+		case float64:
+			pidInt = int(v)
+		default:
+			continue // Skip unsupported PID type
 		}
 
-		if pidVal != nil {
-			pid = pidVal
-			var pidInt int
-			switch v := pidVal.(type) {
-			case int:
-				pidInt = v
-			case int64:
-				pidInt = int(v)
-			case int32:
-				pidInt = int(v)
-			case float64:
-				pidInt = int(v)
-			default:
-				if idx < 10 {
-					fileDebugf("  [%d] Skipped unsupported PID type: %T, value=%v", idx, v, v)
+		if pidInt > 0 {
+			ports = m.getProcessPorts(pidInt)
+			if len(ports) > 0 {
+				stats.portsFound++
+				for _, port := range ports {
+					data.Ports[port] = true
 				}
-				// Don't continue, just skip port extraction for this process
-			}
-
-			if pidInt > 0 {
-				ports = m.getProcessPorts(pidInt)
-				if len(ports) > 0 {
-					stats.portsFound++
-					if idx < 10 {
-						fileDebugf("  [%d] Found %d ports for PID %d: %v", idx, len(ports), pidInt, ports)
-					}
-					for _, port := range ports {
-						data.Ports[port] = true
-					}
-				} else {
-					stats.portsNotFound++
-					// Debug: check if PID exists in pidToPorts
-					if _, exists := m.pidToPorts[pidInt]; !exists {
-						if idx < 10 {
-							fileDebugf("  [%d] PID %d not found in pidToPorts (total PIDs in map: %d)", idx, pidInt, len(m.pidToPorts))
-						}
-					} else {
-						if idx < 10 {
-							fileDebugf("  [%d] PID %d exists in pidToPorts but ports list is empty", idx, pidInt)
-						}
-					}
-				}
-			}
-		} else {
-			if idx < 10 {
-				fileDebugf("  [%d] PID is nil, cannot extract ports", idx)
-			}
-		}
-
-		processedCount++
-		// Log detailed info for first 10 processes and processes with cmdline
-		if idx < 10 || (cmdline != "" && idx < 20) {
-			fileDebugf("  [%d] Process: pid=%v (from %s), name=%s (from %s), cmdline_len=%d (from %s), ports=%d",
-				idx, pid, pidSource, name, nameSource, len(cmdline), cmdlineSource, len(ports))
-			if cmdline != "" && len(cmdline) > 100 {
-				fileDebugf("    cmdline_preview=%s...", cmdline[:100])
+			} else {
+				stats.portsNotFound++
 			}
 		}
 	}
 
-	fileDebugf("Built alive process data: processed=%d, names=%d, cmdlines=%d, ports=%d", processedCount, len(data.ProcessNames), len(data.Cmdlines), len(data.Ports))
-	fileDebugf("  Stats - name: root=%d, proc=%d, not_found=%d", stats.nameFromRoot, stats.nameFromProc, stats.nameNotFound)
-	fileDebugf("  Stats - cmdline: root=%d, proc=%d, not_found=%d", stats.cmdlineFromRoot, stats.cmdlineFromProc, stats.cmdlineNotFound)
-	fileDebugf("  Stats - pid: root=%d, proc=%d, not_found=%d", stats.pidFromRoot, stats.pidFromProc, stats.pidNotFound)
+	fileDebugf("Built alive process data: names=%d, cmdlines=%d, ports=%d", len(data.ProcessNames), len(data.Cmdlines), len(data.Ports))
+	fileDebugf("  Stats - name: found=%d, not_found=%d", stats.nameFound, stats.nameNotFound)
+	fileDebugf("  Stats - cmdline: found=%d, not_found=%d", stats.cmdlineFound, stats.cmdlineNotFound)
+	fileDebugf("  Stats - pid: found=%d, not_found=%d", stats.pidFound, stats.pidNotFound)
 	fileDebugf("  Stats - ports: found=%d, not_found=%d, pidToPorts_size=%d", stats.portsFound, stats.portsNotFound, len(m.pidToPorts))
 
 	return data
-}
-
-// extractCmdline extracts command line from process data (helper method, handles multiple cases)
-func (m *MetricSet) extractCmdline(proc mapstr.M) string {
-	// Try multiple possible field paths for cmdline
-	// Priority order:
-	// 1. process.command_line (ECS standard)
-	// 2. system.process.cmdline (metricbeat system.process specific)
-	// 3. process.cmdline (alternative)
-	// 4. process.args (fallback: construct from args array)
-
-	fieldPaths := []string{
-		"system.process.cmdline", // metricbeat format (priority 1)
-		"process.cmdline",        // alternative
-		"process.command_line",   // ECS standard
-	}
-
-	for _, path := range fieldPaths {
-		if cmdline, err := proc.GetValue(path); err == nil {
-			if cmdlineStr, ok := cmdline.(string); ok && cmdlineStr != "" {
-				fileDebugf("extractCmdline: extracted from %s, length=%d", path, len(cmdlineStr))
-				return cmdlineStr
-			}
-			fileDebugf("extractCmdline: %s exists but not valid string, type=%T, value=%v", path, cmdline, cmdline)
-		} else {
-			fileDebugf("extractCmdline: %s not found", path)
-		}
-	}
-
-	// Fallback: use args concatenation
-	if args, err := proc.GetValue("process.args"); err == nil {
-		if argsSlice, ok := args.([]string); ok {
-			result := strings.Join(argsSlice, " ")
-			fileDebugf("extractCmdline: extracted from args ([]string), length=%d", len(result))
-			return result
-		}
-		// Try interface{} slice
-		if argsSlice, ok := args.([]interface{}); ok {
-			var strArgs []string
-			for _, arg := range argsSlice {
-				if argStr, ok := arg.(string); ok {
-					strArgs = append(strArgs, argStr)
-				}
-			}
-			if len(strArgs) > 0 {
-				result := strings.Join(strArgs, " ")
-				fileDebugf("extractCmdline: extracted from args ([]interface{}), length=%d", len(result))
-				return result
-			}
-			fileDebugf("extractCmdline: args is []interface{} but no valid strings found")
-		} else {
-			fileDebugf("extractCmdline: args exists but not slice, type=%T", args)
-		}
-	} else {
-		fileDebugf("extractCmdline: process.args not found")
-	}
-
-	// Debug: log all available keys in proc for first few processes
-	// Try to get nested process keys
-	if processVal, err := proc.GetValue("process"); err == nil {
-		if processMap, ok := processVal.(map[string]interface{}); ok {
-			procKeys := make([]string, 0, 10)
-			for k := range processMap {
-				if len(procKeys) < 10 {
-					procKeys = append(procKeys, k)
-				}
-			}
-			fileDebugf("extractCmdline: available process.* keys (first 10): %v", procKeys)
-		}
-	}
-	// Try to get nested system.process keys
-	if systemVal, err := proc.GetValue("system"); err == nil {
-		if systemMap, ok := systemVal.(map[string]interface{}); ok {
-			if processVal, ok := systemMap["process"].(map[string]interface{}); ok {
-				sysProcKeys := make([]string, 0, 10)
-				for k := range processVal {
-					if len(sysProcKeys) < 10 {
-						sysProcKeys = append(sysProcKeys, k)
-					}
-				}
-				fileDebugf("extractCmdline: available system.process.* keys (first 10): %v", sysProcKeys)
-			}
-		}
-	}
-
-	fileDebugf("extractCmdline: no cmdline extracted, returning empty string")
-	return ""
 }
 
 // checkInstanceAlive checks the liveness status of a single instance
@@ -940,9 +781,6 @@ func (m *MetricSet) addInstanceIdDimension(
 
 	matchedCount := 0
 	unmatchedCount := 0
-	emptyCmdlineCount := 0
-	cmdlineFromRootCount := 0
-	cmdlineFromProcCount := 0
 
 	for i := range procs {
 		// Get corresponding root fields (contains process.* ECS fields)
@@ -950,33 +788,19 @@ func (m *MetricSet) addInstanceIdDimension(
 		if i < len(roots) {
 			root = roots[i]
 		}
+		if root == nil {
+			continue
+		}
 
-		// Extract cmdline: priority from root (process.command_line), then from proc (system.process.cmdline)
+		// Extract cmdline from root (process.command_line)
 		var cmdline string
-		var cmdlineSource string
-		if root != nil {
-			if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
-				if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
-					cmdline = cmdlineStr
-					cmdlineSource = "root.process.command_line"
-					cmdlineFromRootCount++
-				}
-			}
-		}
-		// Fallback to system.process.cmdline from MetricSetFields
-		if cmdline == "" {
-			cmdline = m.extractCmdline(procs[i])
-			if cmdline != "" {
-				cmdlineSource = "proc.system.process.cmdline"
-				cmdlineFromProcCount++
+		if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
+			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
+				cmdline = cmdlineStr
 			}
 		}
 
 		if cmdline == "" {
-			emptyCmdlineCount++
-			if i < 10 {
-				fileDebugf("  [%d] Skipped process without cmdline", i)
-			}
 			continue // Skip processes without command line
 		}
 
@@ -984,48 +808,18 @@ func (m *MetricSet) addInstanceIdDimension(
 		if instanceId, exists := m.cmdlineToInstId[cmdline]; exists {
 			procs[i].Put("instanceId", instanceId)
 			matchedCount++
-			if i < 10 {
-				fileDebugf("  [%d] MATCHED: Added instanceId=%s, cmdline_len=%d (from %s)", i, instanceId, len(cmdline), cmdlineSource)
-				if len(cmdline) > 100 {
-					fileDebugf("    cmdline_preview=%s...", cmdline[:100])
-				}
-			}
 		} else {
 			unmatchedCount++
-			// Log first 5 unmatched processes with cmdline for debugging
-			if unmatchedCount <= 5 {
-				fileDebugf("  [%d] NOT MATCHED: cmdline_len=%d (from %s), index_size=%d", i, len(cmdline), cmdlineSource, len(m.cmdlineToInstId))
-				if len(cmdline) > 100 {
-					fileDebugf("    cmdline_preview=%s...", cmdline[:100])
-				} else {
-					fileDebugf("    cmdline=%s", cmdline)
-				}
-				// Show first few entries from index for comparison
-				if len(m.cmdlineToInstId) > 0 {
-					count := 0
-					for idxCmdline, idxInstId := range m.cmdlineToInstId {
-						if count >= 3 {
-							break
-						}
-						fileDebugf("    index[%d]: instanceId=%s, cmdline_len=%d", count, idxInstId, len(idxCmdline))
-						if len(idxCmdline) > 100 {
-							fileDebugf("      index_cmdline_preview=%s...", idxCmdline[:100])
-						}
-						count++
-					}
-				}
-			}
 		}
 	}
 
-	fileDebugf("addInstanceIdDimension: completed - matched=%d, unmatched=%d, empty_cmdline=%d", matchedCount, unmatchedCount, emptyCmdlineCount)
-	fileDebugf("  cmdline extraction: root=%d, proc=%d", cmdlineFromRootCount, cmdlineFromProcCount)
+	fileDebugf("addInstanceIdDimension: completed - matched=%d, unmatched=%d", matchedCount, unmatchedCount)
 }
 
 // buildDeadProcessEvent builds an event for a dead/abnormal process
 func (m *MetricSet) buildDeadProcessEvent(deadProc DeadProcessInfo) mb.Event {
 	metricSetFields := mapstr.M{
-		"alive_state": 1, // 1 indicates abnormal
+		"alive_state": "1", // "1" indicates abnormal (use string type for database compatibility)
 	}
 
 	rootFields := mapstr.M{
