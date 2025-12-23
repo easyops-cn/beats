@@ -30,9 +30,9 @@ type ProcessCheckItem struct {
 
 // ArtifactInstCheck represents deployment instance check configuration
 type ArtifactInstCheck struct {
-	InstanceId        string             `config:"instanceId"`        // Instance ID
-	CheckProcessNames []string           `config:"checkProcessNames"` // Process name check list (full match)
-	ProcessList       []ProcessCheckItem `config:"processList"`       // Process list (cmdline + port check)
+	InstanceId         string             `config:"instanceId"`         // Instance ID
+	ProcessMatchFields []string           `config:"processMatchFields"` // Process match fields: check if any alive cmdline contains these strings
+	ProcessList        []ProcessCheckItem `config:"processList"`        // Process list (cmdline + port check)
 }
 
 // Config stores the system/process config options

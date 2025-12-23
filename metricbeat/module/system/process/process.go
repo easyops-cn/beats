@@ -21,14 +21,13 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"unsafe"
-
-	"github.com/pkg/errors"
 
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
@@ -41,7 +40,9 @@ import (
 	"github.com/elastic/elastic-agent-system-metrics/metric/system/resolve"
 )
 
-var debugf = logp.MakeDebug("system.process")
+var (
+	debugf = logp.MakeDebug("system.process")
+)
 
 func init() {
 	mb.Registry.MustAddMetricSet("system", "process", New,
@@ -104,7 +105,6 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 	if runtime.GOOS == "linux" {
 		if config.Cgroups == nil || *config.Cgroups {
 			enableCgroups = true
-			debugf("process cgroup data collection is enabled, using hostfs='%v'", sys.ResolveHostFS(""))
 		}
 	}
 
@@ -153,8 +153,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 
 	// Conditionally initialize port watcher (cross-platform support)
 	if err := m.initPortWatcher(); err != nil {
-		debugf("Port watcher initialization failed, will use cmdline-only check: %v", err)
 		// Non-fatal error, continue running
+		debugf("Port watcher initialization failed, will use cmdline-only check: %v", err)
 	}
 
 	// Build performance optimization index
@@ -171,11 +171,10 @@ func (m *MetricSet) initPortWatcher() error {
 
 	watcher := &procs.ProcessesWatcher{}
 	if err := watcher.Init(procs.ProcsConfig{Enabled: true}); err != nil {
-		return errors.Wrap(err, "failed to initialize port watcher")
+		return fmt.Errorf("failed to initialize port watcher: %w", err)
 	}
 
 	m.portWatcher = watcher
-	debugf("Port watcher initialized successfully")
 	return nil
 }
 
@@ -200,7 +199,6 @@ func (m *MetricSet) buildCmdlineToInstIdIndex() {
 			}
 		}
 	}
-	debugf("Built cmdlineToInstId index with %d entries", len(m.cmdlineToInstId))
 }
 
 // collectProcessPorts collects listening ports for all processes (cross-platform support)
@@ -224,7 +222,6 @@ func (m *MetricSet) collectProcessPorts() error {
 		// Non-fatal error, continue running
 	}
 
-	debugf("Collected ports for %d processes", len(m.pidToPorts))
 	return nil
 }
 
@@ -232,7 +229,7 @@ func (m *MetricSet) collectProcessPorts() error {
 func (m *MetricSet) collectPortsForTransport(transport applayer.Transport) error {
 	ports, err := m.portWatcher.GetLocalPortToPIDMapping(transport)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get %s ports", transport)
+		return fmt.Errorf("failed to get %s ports: %w", transport, err)
 	}
 
 	// Convert to internal format
@@ -257,15 +254,34 @@ func (m *MetricSet) getPortFromEndpoint(endpoint interface{}) uint16 {
 	if v.Kind() == reflect.Struct {
 		// Get the port field (unexported, so we need to use unsafe)
 		portField := v.FieldByName("port")
-		if portField.IsValid() && portField.CanInterface() {
+		if !portField.IsValid() {
+			return 0
+		}
+
+		// Try to get value through Interface() first (safer)
+		if portField.CanInterface() {
 			if port, ok := portField.Interface().(uint16); ok {
 				return port
 			}
 		}
-		// If CanInterface() returns false, use unsafe to access the field
-		if portField.IsValid() {
-			// Use unsafe to read the uint16 value
-			portPtr := unsafe.Pointer(portField.UnsafeAddr())
+
+		// If CanInterface() returns false, we need to use unsafe
+		// But first, we need to make sure the value is addressable
+		// If not, create a copy
+		var addrValue reflect.Value
+		if portField.CanAddr() {
+			addrValue = portField
+		} else {
+			// Create an addressable copy of the struct
+			// This happens when endpoint comes from a map range (unaddressable)
+			structCopy := reflect.New(v.Type()).Elem()
+			structCopy.Set(v)
+			addrValue = structCopy.FieldByName("port")
+		}
+
+		// Now we can safely use UnsafeAddr()
+		if addrValue.IsValid() && addrValue.CanAddr() {
+			portPtr := unsafe.Pointer(addrValue.UnsafeAddr())
 			return *(*uint16)(portPtr)
 		}
 	}
@@ -287,18 +303,18 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	if m.needPortCheck() && m.portWatcher != nil {
 		if err := m.collectProcessPorts(); err != nil {
 			debugf("Port collection failed, continuing with cmdline-only check: %v", err)
-			// Non-fatal error, continue running
 		}
 	}
 
 	// Get all process data
 	procs, roots, err := m.stats.Get()
 	if err != nil {
-		return errors.Wrap(err, "process stats")
+		return fmt.Errorf("process stats: %w", err)
 	}
 
 	// Build alive process data structure (performance optimization)
-	aliveData := m.buildAliveProcessData(procs)
+	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
+	aliveData := m.buildAliveProcessData(procs, roots)
 
 	// Iterate through each instance and perform liveness check
 	var allDeadProcs []DeadProcessInfo
@@ -308,32 +324,32 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	}
 
 	// Add instanceId dimension to normal processes
-	m.addInstanceIdDimension(procs)
+	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
+	m.addInstanceIdDimension(procs, roots)
 
 	// Report normal process metrics
 	for i := range procs {
 		// Ensure instanceId is in RootFields for dimension matching
+		if roots[i] == nil {
+			roots[i] = mapstr.M{}
+		}
 		if instanceId, exists := procs[i]["instanceId"]; exists {
-			if roots[i] == nil {
-				roots[i] = mapstr.M{}
-			}
 			roots[i].Put("instanceId", instanceId)
+		} else {
+			roots[i].Put("instanceId", "")
 		}
 
-		isOpen := r.Event(mb.Event{
+		if !r.Event(mb.Event{
 			MetricSetFields: procs[i],
 			RootFields:      roots[i],
-		})
-		if !isOpen {
+		}) {
 			return nil
 		}
 	}
 
 	// Report abnormal process metrics
 	for _, deadProc := range allDeadProcs {
-		event := m.buildDeadProcessEvent(deadProc)
-		isOpen := r.Event(event)
-		if !isOpen {
+		if !r.Event(m.buildDeadProcessEvent(deadProc)) {
 			return nil
 		}
 	}
@@ -347,69 +363,71 @@ func (m *MetricSet) needPortCheck() bool {
 }
 
 // buildAliveProcessData builds alive process data structure (performance optimization core method)
-func (m *MetricSet) buildAliveProcessData(procs []mapstr.M) *AliveProcessData {
+// procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
+func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *AliveProcessData {
 	data := NewAliveProcessData()
 
-	for _, proc := range procs {
-		// Extract process name
-		if name, err := proc.GetValue("process.name"); err == nil {
-			if nameStr, ok := name.(string); ok && nameStr != "" {
+	for idx := range procs {
+		// Get corresponding root fields (contains process.* ECS fields)
+		var root mapstr.M
+		if idx < len(roots) {
+			root = roots[idx]
+		}
+		if root == nil {
+			continue // Skip if no root fields
+		}
+
+		var cmdline string
+		var ports []string
+
+		// Extract process name from root (ECS format)
+		if nameVal, err := root.GetValue("process.name"); err == nil {
+			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
 				data.ProcessNames[nameStr] = true
 			}
 		}
 
-		// Extract command line
-		cmdline := m.extractCmdline(proc)
-		if cmdline != "" {
-			data.Cmdlines[cmdline] = true
+		// Extract command line from root (ECS format)
+		if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
+			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
+				cmdline = cmdlineStr
+				data.Cmdlines[cmdline] = true
+			}
 		}
 
-		// Extract ports (requires PID)
-		if pid, err := proc.GetValue("process.pid"); err == nil {
-			if pidInt, ok := pid.(int); ok {
-				ports := m.getProcessPorts(pidInt)
-				for _, port := range ports {
-					data.Ports[port] = true
-				}
+		// Extract PID from root (ECS format)
+		pidVal, err := root.GetValue("process.pid")
+		if err != nil {
+			// Try direct "pid" field as last resort
+			pidVal, err = root.GetValue("pid")
+		}
+		if err != nil {
+			continue // Skip port extraction if no PID
+		}
+
+		var pidInt int
+		switch v := pidVal.(type) {
+		case int:
+			pidInt = v
+		case int64:
+			pidInt = int(v)
+		case int32:
+			pidInt = int(v)
+		case float64:
+			pidInt = int(v)
+		default:
+			continue // Skip unsupported PID type
+		}
+
+		if pidInt > 0 {
+			ports = m.getProcessPorts(pidInt)
+			for _, port := range ports {
+				data.Ports[port] = true
 			}
 		}
 	}
-
-	debugf("Built alive process data: %d names, %d cmdlines, %d ports",
-		len(data.ProcessNames), len(data.Cmdlines), len(data.Ports))
 
 	return data
-}
-
-// extractCmdline extracts command line from process data (helper method, handles multiple cases)
-func (m *MetricSet) extractCmdline(proc mapstr.M) string {
-	// Prefer command_line
-	if cmdline, err := proc.GetValue("process.command_line"); err == nil {
-		if cmdlineStr, ok := cmdline.(string); ok {
-			return cmdlineStr
-		}
-	}
-
-	// Fallback: use args concatenation
-	if args, err := proc.GetValue("process.args"); err == nil {
-		if argsSlice, ok := args.([]string); ok {
-			return strings.Join(argsSlice, " ")
-		}
-		// Try interface{} slice
-		if argsSlice, ok := args.([]interface{}); ok {
-			var strArgs []string
-			for _, arg := range argsSlice {
-				if argStr, ok := arg.(string); ok {
-					strArgs = append(strArgs, argStr)
-				}
-			}
-			if len(strArgs) > 0 {
-				return strings.Join(strArgs, " ")
-			}
-		}
-	}
-
-	return ""
 }
 
 // checkInstanceAlive checks the liveness status of a single instance
@@ -417,35 +435,30 @@ func (m *MetricSet) checkInstanceAlive(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	var deadProcs []DeadProcessInfo
-
-	// Branch A: checkProcessNames is not empty (higher priority)
-	if len(inst.CheckProcessNames) > 0 {
-		deadProcs = m.checkProcessNames(inst, aliveData)
-	} else {
-		// Branch B: check processList
-		deadProcs = m.checkProcessList(inst, aliveData)
+	// Branch A: processMatchFields is not empty (higher priority)
+	if len(inst.ProcessMatchFields) > 0 {
+		return m.checkProcessMatchFields(inst, aliveData)
 	}
-
-	return deadProcs
+	// Branch B: check processList
+	return m.checkProcessList(inst, aliveData)
 }
 
-// checkProcessNames checks process names (Branch A)
-func (m *MetricSet) checkProcessNames(
+// checkProcessMatchFields checks process match fields against cmdlines (Branch A)
+func (m *MetricSet) checkProcessMatchFields(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
 	var deadProcs []DeadProcessInfo
 
-	for _, checkName := range inst.CheckProcessNames {
-		if checkName == "" {
+	for _, matchField := range inst.ProcessMatchFields {
+		if matchField == "" {
 			continue // Skip empty strings
 		}
 
-		if !m.isProcessNameAlive(checkName, aliveData.ProcessNames) {
+		if !m.isCmdlineContains(matchField, aliveData.Cmdlines) {
 			deadProcs = append(deadProcs, DeadProcessInfo{
 				InstanceId: inst.InstanceId,
-				Identifier: checkName,
+				Identifier: matchField,
 			})
 		}
 	}
@@ -453,11 +466,11 @@ func (m *MetricSet) checkProcessNames(
 	return deadProcs
 }
 
-// isProcessNameAlive checks if a process name is alive (helper method, supports contains matching)
-func (m *MetricSet) isProcessNameAlive(checkName string, aliveNames map[string]bool) bool {
-	for aliveName := range aliveNames {
-		if strings.Contains(aliveName, checkName) {
-			return true // Found match, return immediately
+// isCmdlineContains checks if any cmdline contains the match field (helper method)
+func (m *MetricSet) isCmdlineContains(matchField string, aliveCmdlines map[string]bool) bool {
+	for cmdline := range aliveCmdlines {
+		if strings.Contains(cmdline, matchField) {
+			return true
 		}
 	}
 	return false
@@ -503,11 +516,8 @@ func (m *MetricSet) checkPortsExist(
 
 	// Any port exists is sufficient
 	for _, port := range expectedPorts {
-		if port == "" {
-			continue // Skip empty ports
-		}
-		if alivePorts[port] {
-			return true // Found one port exists, that's sufficient
+		if port != "" && alivePorts[port] {
+			return true
 		}
 	}
 
@@ -515,19 +525,31 @@ func (m *MetricSet) checkPortsExist(
 }
 
 // addInstanceIdDimension adds instanceId dimension to processes
+// procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
 func (m *MetricSet) addInstanceIdDimension(
 	procs []mapstr.M,
+	roots []mapstr.M,
 ) {
 	for i := range procs {
-		cmdline := m.extractCmdline(procs[i])
-		if cmdline == "" {
-			continue // Skip processes without command line
+		// Get corresponding root fields (contains process.* ECS fields)
+		if i >= len(roots) || roots[i] == nil {
+			continue
+		}
+
+		// Extract cmdline from root (process.command_line)
+		cmdlineVal, err := roots[i].GetValue("process.command_line")
+		if err != nil {
+			continue
+		}
+
+		cmdline, ok := cmdlineVal.(string)
+		if !ok || cmdline == "" {
+			continue
 		}
 
 		// Use pre-built index for O(1) lookup
 		if instanceId, exists := m.cmdlineToInstId[cmdline]; exists {
 			procs[i].Put("instanceId", instanceId)
-			debugf("Added instanceId %s to process: cmdline=%s", instanceId, cmdline)
 		}
 	}
 }
@@ -535,7 +557,7 @@ func (m *MetricSet) addInstanceIdDimension(
 // buildDeadProcessEvent builds an event for a dead/abnormal process
 func (m *MetricSet) buildDeadProcessEvent(deadProc DeadProcessInfo) mb.Event {
 	metricSetFields := mapstr.M{
-		"alive_state": 1, // 1 indicates abnormal
+		"alive_state": int64(1), // 1 indicates abnormal
 	}
 
 	rootFields := mapstr.M{

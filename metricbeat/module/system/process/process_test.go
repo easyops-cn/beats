@@ -82,8 +82,8 @@ func TestMultiInstanceConfig(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "test-instance-1",
-				"checkProcessNames": []string{"test-process"},
+				"instanceId":         "test-instance-1",
+				"processMatchFields": []string{"test-process"},
 				"processList": []map[string]interface{}{
 					{
 						"cmdline": "/usr/bin/test",
@@ -103,8 +103,8 @@ func TestMultiInstanceConfig(t *testing.T) {
 	assert.NotNil(t, ms)
 	assert.Equal(t, 1, len(ms.artifactInsts))
 	assert.Equal(t, "test-instance-1", ms.artifactInsts[0].InstanceId)
-	assert.Equal(t, 1, len(ms.artifactInsts[0].CheckProcessNames))
-	assert.Equal(t, "test-process", ms.artifactInsts[0].CheckProcessNames[0])
+	assert.Equal(t, 1, len(ms.artifactInsts[0].ProcessMatchFields))
+	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchFields[0])
 }
 
 // TestMetricDataGeneration tests the complete metric data generation flow
@@ -118,8 +118,8 @@ func TestMetricDataGeneration(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "inst-test-001",
-				"checkProcessNames": []string{}, // Empty, use processList mode
+				"instanceId":         "inst-test-001",
+				"processMatchFields": []string{}, // Empty, use processList mode
 				"processList": []map[string]interface{}{
 					{
 						"cmdline": "/usr/bin/nginx",
@@ -191,20 +191,20 @@ func TestMetricDataGeneration(t *testing.T) {
 	t.Logf("Total events generated: %d", len(events))
 }
 
-// TestCheckProcessNamesMode tests the checkProcessNames mode
-func TestCheckProcessNamesMode(t *testing.T) {
+// TestCheckProcessMatchFieldsMode tests the processMatchFields mode
+func TestCheckProcessMatchFieldsMode(t *testing.T) {
 	logp.DevelopmentSetup()
 
-	// Test configuration with checkProcessNames mode
+	// Test configuration with processMatchFields mode
 	config := map[string]interface{}{
 		"module":     "system",
 		"metricsets": []string{"process"},
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "inst-names-001",
-				"checkProcessNames": []string{"java", "elasticsearch"}, // Use checkProcessNames mode
-				"processList":       []map[string]interface{}{},
+				"instanceId":         "inst-names-001",
+				"processMatchFields": []string{"java", "elasticsearch"}, // Use processMatchFields mode
+				"processList":        []map[string]interface{}{},
 			},
 		},
 	}
@@ -255,8 +255,8 @@ func TestInstanceIdDimension(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "inst-dimension-test",
-				"checkProcessNames": []string{},
+				"instanceId":         "inst-dimension-test",
+				"processMatchFields": []string{},
 				"processList": []map[string]interface{}{
 					// Use a common process that might exist
 					// Note: This is a test, actual cmdline matching requires exact match
@@ -300,8 +300,8 @@ func TestPortCollection(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "inst-port-test",
-				"checkProcessNames": []string{},
+				"instanceId":         "inst-port-test",
+				"processMatchFields": []string{},
 				"processList": []map[string]interface{}{
 					{
 						"cmdline": "/usr/bin/test-service",
@@ -373,8 +373,8 @@ func TestMetricDataStructure(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":        "inst-structure-test",
-				"checkProcessNames": []string{},
+				"instanceId":         "inst-structure-test",
+				"processMatchFields": []string{},
 				"processList": []map[string]interface{}{
 					{
 						"cmdline": "/bin/sh",
