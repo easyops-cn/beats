@@ -21,14 +21,13 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"unsafe"
-
-	"github.com/pkg/errors"
 
 	"github.com/elastic/beats/v7/metricbeat/mb"
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
@@ -172,7 +171,7 @@ func (m *MetricSet) initPortWatcher() error {
 
 	watcher := &procs.ProcessesWatcher{}
 	if err := watcher.Init(procs.ProcsConfig{Enabled: true}); err != nil {
-		return errors.Wrap(err, "failed to initialize port watcher")
+		return fmt.Errorf("failed to initialize port watcher: %w", err)
 	}
 
 	m.portWatcher = watcher
@@ -230,7 +229,7 @@ func (m *MetricSet) collectProcessPorts() error {
 func (m *MetricSet) collectPortsForTransport(transport applayer.Transport) error {
 	ports, err := m.portWatcher.GetLocalPortToPIDMapping(transport)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get %s ports", transport)
+		return fmt.Errorf("failed to get %s ports: %w", transport, err)
 	}
 
 	// Convert to internal format
@@ -310,7 +309,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	// Get all process data
 	procs, roots, err := m.stats.Get()
 	if err != nil {
-		return errors.Wrap(err, "process stats")
+		return fmt.Errorf("process stats: %w", err)
 	}
 
 	// Build alive process data structure (performance optimization)
