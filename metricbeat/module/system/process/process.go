@@ -21,15 +21,11 @@
 package process
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 	"unsafe"
 
 	"github.com/pkg/errors"
@@ -47,58 +43,7 @@ import (
 
 var (
 	debugf = logp.MakeDebug("system.process")
-	// Custom file logger for process module
-	fileLogger     *os.File
-	fileLoggerOnce sync.Once
-	logFileMutex   sync.Mutex
 )
-
-// initFileLogger initializes the custom file logger
-func initFileLogger() {
-	fileLoggerOnce.Do(func() {
-		logPath := "/usr/local/easyops/easy_metric_sampler/log/metricbeat.log"
-
-		// Ensure directory exists
-		dir := filepath.Dir(logPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			// Fallback to standard logger if directory creation fails
-			logp.NewLogger("system.process").Warnf("Failed to create log directory %s: %v, using standard logger", dir, err)
-			return
-		}
-
-		// Open or create log file (append mode)
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			// Fallback to standard logger if file creation fails
-			logp.NewLogger("system.process").Warnf("Failed to open log file %s: %v, using standard logger", logPath, err)
-			return
-		}
-
-		fileLogger = f
-	})
-}
-
-// fileDebugf writes debug messages to the custom log file
-func fileDebugf(format string, args ...interface{}) {
-	// Also use standard logger
-	debugf(format, args...)
-
-	// Write to custom file if available
-	if fileLogger != nil {
-		logFileMutex.Lock()
-		defer logFileMutex.Unlock()
-
-		timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-		message := fmt.Sprintf(format, args...)
-		logLine := fmt.Sprintf("[%s] [DEBUG] [system.process] %s\n", timestamp, message)
-
-		_, err := fileLogger.WriteString(logLine)
-		if err != nil {
-			// If write fails, try to reopen the file
-			logp.NewLogger("system.process").Warnf("Failed to write to log file: %v", err)
-		}
-	}
-}
 
 func init() {
 	mb.Registry.MustAddMetricSet("system", "process", New,
@@ -151,9 +96,6 @@ type MetricSet struct {
 
 // New creates and returns a new MetricSet.
 func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
-	// Initialize custom file logger
-	initFileLogger()
-
 	config := defaultConfig
 	if err := base.Module().UnpackConfig(&config); err != nil {
 		return nil, err
@@ -164,7 +106,6 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 	if runtime.GOOS == "linux" {
 		if config.Cgroups == nil || *config.Cgroups {
 			enableCgroups = true
-			fileDebugf("process cgroup data collection is enabled, using hostfs='%v'", sys.ResolveHostFS(""))
 		}
 	}
 
@@ -213,8 +154,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 
 	// Conditionally initialize port watcher (cross-platform support)
 	if err := m.initPortWatcher(); err != nil {
-		fileDebugf("Port watcher initialization failed, will use cmdline-only check: %v", err)
 		// Non-fatal error, continue running
+		debugf("Port watcher initialization failed, will use cmdline-only check: %v", err)
 	}
 
 	// Build performance optimization index
@@ -235,7 +176,6 @@ func (m *MetricSet) initPortWatcher() error {
 	}
 
 	m.portWatcher = watcher
-	fileDebugf("Port watcher initialized successfully")
 	return nil
 }
 
@@ -253,61 +193,36 @@ func (m *MetricSet) needPortCollection() bool {
 
 // buildCmdlineToInstIdIndex builds a fast lookup index for command line to instance ID
 func (m *MetricSet) buildCmdlineToInstIdIndex() {
-	fileDebugf("Building cmdlineToInstId index, total instances: %d", len(m.artifactInsts))
 	for _, inst := range m.artifactInsts {
-		fileDebugf("Processing instance: instanceId=%s, processMatchFields=%v, processList_count=%d",
-			inst.InstanceId, inst.ProcessMatchFields, len(inst.ProcessList))
-		for i, proc := range inst.ProcessList {
+		for _, proc := range inst.ProcessList {
 			if proc.Cmdline != "" {
 				m.cmdlineToInstId[proc.Cmdline] = inst.InstanceId
-				fileDebugf("  [%d] Added to index: instanceId=%s, cmdline=%s, ports=%v",
-					i, inst.InstanceId, proc.Cmdline, proc.Ports)
-			} else {
-				fileDebugf("  [%d] Skipped empty cmdline", i)
 			}
 		}
 	}
-	fileDebugf("Built cmdlineToInstId index with %d entries", len(m.cmdlineToInstId))
 }
 
 // collectProcessPorts collects listening ports for all processes (cross-platform support)
 func (m *MetricSet) collectProcessPorts() error {
 	if m.portWatcher == nil {
-		fileDebugf("collectProcessPorts: portWatcher is nil, skipping")
 		return nil // Port watcher not initialized, skip
 	}
 
 	// Clear cache
-	oldSize := len(m.pidToPorts)
 	m.pidToPorts = make(map[int][]string)
-	fileDebugf("collectProcessPorts: cleared pidToPorts cache (old_size=%d)", oldSize)
 
 	// Collect TCP ports
-	tcpCountBefore := len(m.pidToPorts)
 	if err := m.collectPortsForTransport(applayer.TransportTCP); err != nil {
-		fileDebugf("Failed to collect TCP ports: %v", err)
+		debugf("Failed to collect TCP ports: %v", err)
 		// Continue trying UDP, don't return error directly
-	} else {
-		tcpCountAfter := len(m.pidToPorts)
-		fileDebugf("TCP port collection: added %d new PIDs (total=%d)", tcpCountAfter-tcpCountBefore, tcpCountAfter)
 	}
 
 	// Collect UDP ports
-	udpCountBefore := len(m.pidToPorts)
 	if err := m.collectPortsForTransport(applayer.TransportUDP); err != nil {
-		fileDebugf("Failed to collect UDP ports: %v", err)
+		debugf("Failed to collect UDP ports: %v", err)
 		// Non-fatal error, continue running
-	} else {
-		udpCountAfter := len(m.pidToPorts)
-		fileDebugf("UDP port collection: added %d new PIDs (total=%d)", udpCountAfter-udpCountBefore, udpCountAfter)
 	}
 
-	// Calculate total ports
-	totalPorts := 0
-	for _, ports := range m.pidToPorts {
-		totalPorts += len(ports)
-	}
-	fileDebugf("Collected ports for %d processes, total ports=%d", len(m.pidToPorts), totalPorts)
 	return nil
 }
 
@@ -385,112 +300,60 @@ func (m *MetricSet) getProcessPorts(pid int) []string {
 // Fetch fetches metrics for all processes. It iterates over each PID and
 // collects process metadata, CPU metrics, and memory metrics.
 func (m *MetricSet) Fetch(r mb.ReporterV2) error {
-	fetchStartTime := time.Now()
 	// Port collection (if needed)
-	needPortCheck := m.needPortCheck()
-	fileDebugf("Fetch: port collection check - needPortCheck=%v, portWatcher=%v", needPortCheck, m.portWatcher != nil)
-	if needPortCheck && m.portWatcher != nil {
+	if m.needPortCheck() && m.portWatcher != nil {
 		if err := m.collectProcessPorts(); err != nil {
-			fileDebugf("Port collection failed, continuing with cmdline-only check: %v", err)
-			// Non-fatal error, continue running
-		} else {
-			fileDebugf("Port collection completed successfully, pidToPorts_size=%d", len(m.pidToPorts))
+			debugf("Port collection failed, continuing with cmdline-only check: %v", err)
 		}
-	} else if needPortCheck {
-		fileDebugf("Port collection needed but portWatcher is nil, will skip port checks")
 	}
 
 	// Get all process data
-	fileDebugf("Fetch: starting metric collection")
 	procs, roots, err := m.stats.Get()
 	if err != nil {
-		fileDebugf("Fetch: ERROR getting process stats: %v", err)
 		return errors.Wrap(err, "process stats")
 	}
-	fileDebugf("Fetch: retrieved %d processes", len(procs))
 
 	// Build alive process data structure (performance optimization)
 	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
 	aliveData := m.buildAliveProcessData(procs, roots)
 
 	// Iterate through each instance and perform liveness check
-	fileDebugf("Fetch: checking %d instances for liveness", len(m.artifactInsts))
-	fileDebugf("  Alive data summary: names=%d, cmdlines=%d, ports=%d", len(aliveData.ProcessNames), len(aliveData.Cmdlines), len(aliveData.Ports))
 	var allDeadProcs []DeadProcessInfo
-	checkStartTime := time.Now()
-	for i, inst := range m.artifactInsts {
-		fileDebugf("Fetch: checking instance [%d/%d]: instanceId=%s", i+1, len(m.artifactInsts), inst.InstanceId)
+	for _, inst := range m.artifactInsts {
 		deadProcs := m.checkInstanceAlive(inst, aliveData)
 		allDeadProcs = append(allDeadProcs, deadProcs...)
-		fileDebugf("Fetch: instance [%d] check completed, found %d dead processes", i+1, len(deadProcs))
 	}
-	checkDuration := time.Since(checkStartTime)
-	fileDebugf("Fetch: total dead processes found: %d (check duration: %v)", len(allDeadProcs), checkDuration)
 
 	// Add instanceId dimension to normal processes
 	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
-	fileDebugf("Fetch: adding instanceId dimension to %d processes", len(procs))
 	m.addInstanceIdDimension(procs, roots)
 
 	// Report normal process metrics
-	fileDebugf("Fetch: reporting %d normal process metrics", len(procs))
-	reportedNormalCount := 0
-	withInstanceIdCount := 0
-	withoutInstanceIdCount := 0
 	for i := range procs {
 		// Ensure instanceId is in RootFields for dimension matching
+		if roots[i] == nil {
+			roots[i] = mapstr.M{}
+		}
 		if instanceId, exists := procs[i]["instanceId"]; exists {
-			if roots[i] == nil {
-				roots[i] = mapstr.M{}
-			}
 			roots[i].Put("instanceId", instanceId)
-			withInstanceIdCount++
-			if i < 5 {
-				fileDebugf("  [%d] Reporting normal process with instanceId=%s", i, instanceId)
-			}
 		} else {
-			// Ensure instanceId exists in RootFields even if empty (for frontend compatibility)
-			if roots[i] == nil {
-				roots[i] = mapstr.M{}
-			}
 			roots[i].Put("instanceId", "")
-			withoutInstanceIdCount++
-			if i < 5 {
-				fileDebugf("  [%d] Reporting normal process without instanceId", i)
-			}
 		}
 
-		isOpen := r.Event(mb.Event{
+		if !r.Event(mb.Event{
 			MetricSetFields: procs[i],
 			RootFields:      roots[i],
-		})
-		if !isOpen {
-			fileDebugf("Fetch: reporter closed, stopping normal process reporting at index %d", i)
+		}) {
 			return nil
 		}
-		reportedNormalCount++
 	}
-	fileDebugf("Fetch: reported %d normal process metrics (with_instanceId=%d, without_instanceId=%d)",
-		reportedNormalCount, withInstanceIdCount, withoutInstanceIdCount)
 
 	// Report abnormal process metrics
-	fileDebugf("Fetch: reporting %d abnormal process metrics", len(allDeadProcs))
-	reportedAbnormalCount := 0
-	for i, deadProc := range allDeadProcs {
-		fileDebugf("  [%d] Reporting abnormal process: instanceId=%s, identifier=%s",
-			i, deadProc.InstanceId, deadProc.Identifier)
-		event := m.buildDeadProcessEvent(deadProc)
-		isOpen := r.Event(event)
-		if !isOpen {
-			fileDebugf("Fetch: reporter closed, stopping abnormal process reporting at index %d", i)
+	for _, deadProc := range allDeadProcs {
+		if !r.Event(m.buildDeadProcessEvent(deadProc)) {
 			return nil
 		}
-		reportedAbnormalCount++
 	}
-	fileDebugf("Fetch: reported %d abnormal process metrics", reportedAbnormalCount)
-	fetchDuration := time.Since(fetchStartTime)
-	fileDebugf("Fetch: completed successfully - normal=%d, abnormal=%d (total duration: %v)",
-		reportedNormalCount, reportedAbnormalCount, fetchDuration)
 
 	return nil
 }
@@ -504,19 +367,6 @@ func (m *MetricSet) needPortCheck() bool {
 // procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)
 func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *AliveProcessData {
 	data := NewAliveProcessData()
-	fileDebugf("Building alive process data from %d processes (procs=%d, roots=%d)", len(procs), len(procs), len(roots))
-
-	// Statistics for debugging
-	stats := struct {
-		nameFound       int
-		nameNotFound    int
-		cmdlineFound    int
-		cmdlineNotFound int
-		pidFound        int
-		pidNotFound     int
-		portsFound      int
-		portsNotFound   int
-	}{}
 
 	for idx := range procs {
 		// Get corresponding root fields (contains process.* ECS fields)
@@ -528,31 +378,22 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 			continue // Skip if no root fields
 		}
 
-		var name, cmdline string
+		var cmdline string
 		var ports []string
 
 		// Extract process name from root (ECS format)
 		if nameVal, err := root.GetValue("process.name"); err == nil {
 			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
-				name = nameStr
-				stats.nameFound++
 				data.ProcessNames[nameStr] = true
 			}
-		}
-		if name == "" {
-			stats.nameNotFound++
 		}
 
 		// Extract command line from root (ECS format)
 		if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
 			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
 				cmdline = cmdlineStr
-				stats.cmdlineFound++
 				data.Cmdlines[cmdline] = true
 			}
-		}
-		if cmdline == "" {
-			stats.cmdlineNotFound++
 		}
 
 		// Extract PID from root (ECS format)
@@ -562,10 +403,8 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 			pidVal, err = root.GetValue("pid")
 		}
 		if err != nil {
-			stats.pidNotFound++
 			continue // Skip port extraction if no PID
 		}
-		stats.pidFound++
 
 		var pidInt int
 		switch v := pidVal.(type) {
@@ -583,22 +422,11 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 
 		if pidInt > 0 {
 			ports = m.getProcessPorts(pidInt)
-			if len(ports) > 0 {
-				stats.portsFound++
-				for _, port := range ports {
-					data.Ports[port] = true
-				}
-			} else {
-				stats.portsNotFound++
+			for _, port := range ports {
+				data.Ports[port] = true
 			}
 		}
 	}
-
-	fileDebugf("Built alive process data: names=%d, cmdlines=%d, ports=%d", len(data.ProcessNames), len(data.Cmdlines), len(data.Ports))
-	fileDebugf("  Stats - name: found=%d, not_found=%d", stats.nameFound, stats.nameNotFound)
-	fileDebugf("  Stats - cmdline: found=%d, not_found=%d", stats.cmdlineFound, stats.cmdlineNotFound)
-	fileDebugf("  Stats - pid: found=%d, not_found=%d", stats.pidFound, stats.pidNotFound)
-	fileDebugf("  Stats - ports: found=%d, not_found=%d, pidToPorts_size=%d", stats.portsFound, stats.portsNotFound, len(m.pidToPorts))
 
 	return data
 }
@@ -608,28 +436,12 @@ func (m *MetricSet) checkInstanceAlive(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	fileDebugf("checkInstanceAlive: starting check for instanceId=%s, processMatchFields_count=%d, processList_count=%d",
-		inst.InstanceId, len(inst.ProcessMatchFields), len(inst.ProcessList))
-	fileDebugf("  Available alive data: names=%d, cmdlines=%d, ports=%d",
-		len(aliveData.ProcessNames), len(aliveData.Cmdlines), len(aliveData.Ports))
-
-	var deadProcs []DeadProcessInfo
-	checkStartTime := time.Now()
-
 	// Branch A: processMatchFields is not empty (higher priority)
 	if len(inst.ProcessMatchFields) > 0 {
-		fileDebugf("checkInstanceAlive: using Branch A (processMatchFields) for instanceId=%s", inst.InstanceId)
-		deadProcs = m.checkProcessMatchFields(inst, aliveData)
-	} else {
-		// Branch B: check processList
-		fileDebugf("checkInstanceAlive: using Branch B (processList) for instanceId=%s", inst.InstanceId)
-		deadProcs = m.checkProcessList(inst, aliveData)
+		return m.checkProcessMatchFields(inst, aliveData)
 	}
-
-	checkDuration := time.Since(checkStartTime)
-	fileDebugf("checkInstanceAlive: completed for instanceId=%s, found %d dead processes (duration: %v)",
-		inst.InstanceId, len(deadProcs), checkDuration)
-	return deadProcs
+	// Branch B: check processList
+	return m.checkProcessList(inst, aliveData)
 }
 
 // checkProcessMatchFields checks process match fields against cmdlines (Branch A)
@@ -637,52 +449,31 @@ func (m *MetricSet) checkProcessMatchFields(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	fileDebugf("checkProcessMatchFields: checking %d process match fields for instanceId=%s, alive_cmdlines=%d",
-		len(inst.ProcessMatchFields), inst.InstanceId, len(aliveData.Cmdlines))
-
 	var deadProcs []DeadProcessInfo
 
-	for i, matchField := range inst.ProcessMatchFields {
+	for _, matchField := range inst.ProcessMatchFields {
 		if matchField == "" {
-			fileDebugf("  [%d] Skipped empty matchField", i)
 			continue // Skip empty strings
 		}
 
-		isAlive := m.isCmdlineContains(matchField, aliveData.Cmdlines)
-		fileDebugf("  [%d] matchField=%s, isAlive=%v", i, matchField, isAlive)
-
-		if !isAlive {
-			fileDebugf("  [%d] Match field NOT found in any cmdline: matchField=%s, instanceId=%s", i, matchField, inst.InstanceId)
+		if !m.isCmdlineContains(matchField, aliveData.Cmdlines) {
 			deadProcs = append(deadProcs, DeadProcessInfo{
 				InstanceId: inst.InstanceId,
 				Identifier: matchField,
 			})
-		} else {
-			fileDebugf("  [%d] Match field found in cmdline: matchField=%s", i, matchField)
 		}
 	}
 
-	fileDebugf("checkProcessMatchFields: completed for instanceId=%s, found %d dead processes", inst.InstanceId, len(deadProcs))
 	return deadProcs
 }
 
 // isCmdlineContains checks if any cmdline contains the match field (helper method)
 func (m *MetricSet) isCmdlineContains(matchField string, aliveCmdlines map[string]bool) bool {
-	checkedCount := 0
 	for cmdline := range aliveCmdlines {
-		checkedCount++
 		if strings.Contains(cmdline, matchField) {
-			fileDebugf("    isCmdlineContains: MATCH found! matchField=%s, matched_cmdline_len=%d (checked %d cmdlines)",
-				matchField, len(cmdline), checkedCount)
-			if len(cmdline) > 100 {
-				fileDebugf("      cmdline_preview=%s...", cmdline[:100])
-			} else {
-				fileDebugf("      cmdline=%s", cmdline)
-			}
-			return true // Found match, return immediately
+			return true
 		}
 	}
-	fileDebugf("    isCmdlineContains: NO match for matchField=%s (checked %d cmdlines)", matchField, checkedCount)
 	return false
 }
 
@@ -691,14 +482,10 @@ func (m *MetricSet) checkProcessList(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	fileDebugf("checkProcessList: checking %d processes for instanceId=%s, alive_cmdlines=%d, alive_ports=%d",
-		len(inst.ProcessList), inst.InstanceId, len(aliveData.Cmdlines), len(aliveData.Ports))
-
 	var deadProcs []DeadProcessInfo
 
-	for i, proc := range inst.ProcessList {
+	for _, proc := range inst.ProcessList {
 		if proc.Cmdline == "" {
-			fileDebugf("  [%d] Skipped empty cmdline", i)
 			continue // Skip empty command lines
 		}
 
@@ -706,31 +493,15 @@ func (m *MetricSet) checkProcessList(
 		cmdlineExists := aliveData.Cmdlines[proc.Cmdline]
 		portExists := m.checkPortsExist(proc.Ports, aliveData.Ports)
 
-		fileDebugf("  [%d] Checking process: instanceId=%s, cmdline_len=%d, expected_ports=%v",
-			i, inst.InstanceId, len(proc.Cmdline), proc.Ports)
-		fileDebugf("    cmdlineExists=%v, portExists=%v", cmdlineExists, portExists)
-
-		if len(proc.Cmdline) > 100 {
-			fileDebugf("    cmdline_preview=%s...", proc.Cmdline[:100])
-		} else {
-			fileDebugf("    cmdline=%s", proc.Cmdline)
-		}
-
 		// Only abnormal if both cmdline and port don't exist
 		if !cmdlineExists && !portExists {
-			fileDebugf("  [%d] Process marked as DEAD: cmdline NOT found AND ports NOT found", i)
 			deadProcs = append(deadProcs, DeadProcessInfo{
 				InstanceId: inst.InstanceId,
 				Identifier: proc.Cmdline,
 			})
-		} else if cmdlineExists {
-			fileDebugf("  [%d] Process is ALIVE: cmdline found", i)
-		} else if portExists {
-			fileDebugf("  [%d] Process is ALIVE: port found (cmdline not found but port exists)", i)
 		}
 	}
 
-	fileDebugf("checkProcessList: completed for instanceId=%s, found %d dead processes", inst.InstanceId, len(deadProcs))
 	return deadProcs
 }
 
@@ -741,28 +512,16 @@ func (m *MetricSet) checkPortsExist(
 ) bool {
 	// If no ports configured, port check is considered failed
 	if len(expectedPorts) == 0 {
-		fileDebugf("      checkPortsExist: no ports configured, returning false")
 		return false
 	}
 
-	fileDebugf("      checkPortsExist: checking %d expected ports against %d alive ports",
-		len(expectedPorts), len(alivePorts))
-
 	// Any port exists is sufficient
-	for i, port := range expectedPorts {
-		if port == "" {
-			fileDebugf("        [%d] Skipped empty port", i)
-			continue // Skip empty ports
-		}
-		exists := alivePorts[port]
-		fileDebugf("        [%d] port=%s, exists=%v", i, port, exists)
-		if exists {
-			fileDebugf("      checkPortsExist: found matching port=%s, returning true", port)
-			return true // Found one port exists, that's sufficient
+	for _, port := range expectedPorts {
+		if port != "" && alivePorts[port] {
+			return true
 		}
 	}
 
-	fileDebugf("      checkPortsExist: no matching ports found, returning false")
 	return false
 }
 
@@ -772,43 +531,28 @@ func (m *MetricSet) addInstanceIdDimension(
 	procs []mapstr.M,
 	roots []mapstr.M,
 ) {
-	fileDebugf("addInstanceIdDimension: processing %d processes, index_size=%d", len(procs), len(m.cmdlineToInstId))
-
-	matchedCount := 0
-	unmatchedCount := 0
-
 	for i := range procs {
 		// Get corresponding root fields (contains process.* ECS fields)
-		var root mapstr.M
-		if i < len(roots) {
-			root = roots[i]
-		}
-		if root == nil {
+		if i >= len(roots) || roots[i] == nil {
 			continue
 		}
 
 		// Extract cmdline from root (process.command_line)
-		var cmdline string
-		if cmdlineVal, err := root.GetValue("process.command_line"); err == nil {
-			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
-				cmdline = cmdlineStr
-			}
+		cmdlineVal, err := roots[i].GetValue("process.command_line")
+		if err != nil {
+			continue
 		}
 
-		if cmdline == "" {
-			continue // Skip processes without command line
+		cmdline, ok := cmdlineVal.(string)
+		if !ok || cmdline == "" {
+			continue
 		}
 
 		// Use pre-built index for O(1) lookup
 		if instanceId, exists := m.cmdlineToInstId[cmdline]; exists {
 			procs[i].Put("instanceId", instanceId)
-			matchedCount++
-		} else {
-			unmatchedCount++
 		}
 	}
-
-	fileDebugf("addInstanceIdDimension: completed - matched=%d, unmatched=%d", matchedCount, unmatchedCount)
 }
 
 // buildDeadProcessEvent builds an event for a dead/abnormal process
