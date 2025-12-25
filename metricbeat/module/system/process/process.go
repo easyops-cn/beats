@@ -25,6 +25,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -55,6 +56,13 @@ func init() {
 type DeadProcessInfo struct {
 	InstanceId string // Instance ID
 	Identifier string // Identifier (process name or command line)
+}
+
+// ProcessMatchFieldsIndex represents optimized index for ProcessMatchFields matching
+type ProcessMatchFieldsIndex struct {
+	Inst         *ArtifactInstCheck // Pointer to instance configuration
+	Keywords     []string           // Sorted keywords (shortest first)
+	FirstKeyword string             // First keyword (for reverse index)
 }
 
 // AliveProcessData represents alive process data structure (performance optimized)
@@ -91,6 +99,12 @@ type MetricSet struct {
 
 	// Pre-compiled matching index (performance optimization)
 	cmdlineToInstId map[string]string // Command line → instance ID fast lookup table
+
+	// Port to instance ID mapping (mapping B)
+	portToInstId map[string]string // Port → instance ID (first match)
+
+	// ProcessMatchFields index (optimized matching, scheme 4)
+	keywordToInsts map[string][]*ProcessMatchFieldsIndex // Keyword → index list (reverse index)
 }
 
 // New creates and returns a new MetricSet.
@@ -100,7 +114,11 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		return nil, err
 	}
 
-	sys := base.Module().(resolve.Resolver)
+	sysModule, ok := base.Module().(resolve.Resolver)
+	if !ok {
+		return nil, fmt.Errorf("module does not implement resolve.Resolver interface")
+	}
+	sys := sysModule
 	enableCgroups := false
 	if runtime.GOOS == "linux" {
 		if config.Cgroups == nil || *config.Cgroups {
@@ -121,6 +139,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		artifactInsts:   config.ArtifactInsts,
 		pidToPorts:      make(map[int][]string),
 		cmdlineToInstId: make(map[string]string),
+		portToInstId:    make(map[string]string),
+		keywordToInsts:  make(map[string][]*ProcessMatchFieldsIndex),
 		stats: &process.Stats{
 			Procs:         config.Procs,
 			Hostfs:        sys,
@@ -159,6 +179,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 
 	// Build performance optimization index
 	m.buildCmdlineToInstIdIndex()
+	m.buildPortToInstIdIndex()
+	m.buildProcessMatchFieldsIndex()
 
 	return m, nil
 }
@@ -198,6 +220,60 @@ func (m *MetricSet) buildCmdlineToInstIdIndex() {
 				m.cmdlineToInstId[proc.Cmdline] = inst.InstanceId
 			}
 		}
+	}
+}
+
+// buildPortToInstIdIndex builds a fast lookup index for port to instance ID (mapping B)
+// Takes the first match if multiple instances use the same port
+func (m *MetricSet) buildPortToInstIdIndex() {
+	for _, inst := range m.artifactInsts {
+		for _, proc := range inst.ProcessList {
+			for _, port := range proc.Ports {
+				if port != "" {
+					// Take the first match (don't overwrite if already exists)
+					if _, exists := m.portToInstId[port]; !exists {
+						m.portToInstId[port] = inst.InstanceId
+					}
+				}
+			}
+		}
+	}
+}
+
+// buildProcessMatchFieldsIndex builds optimized index for ProcessMatchFields matching (scheme 4)
+// Uses reverse index with keyword sorting for performance optimization
+func (m *MetricSet) buildProcessMatchFieldsIndex() {
+	for i := range m.artifactInsts {
+		inst := &m.artifactInsts[i]
+		if len(inst.ProcessMatchFields) == 0 {
+			continue
+		}
+
+		// Filter empty keywords and create sorted list
+		keywords := []string{}
+		for _, keyword := range inst.ProcessMatchFields {
+			if keyword != "" {
+				keywords = append(keywords, keyword)
+			}
+		}
+
+		if len(keywords) == 0 {
+			continue
+		}
+
+		// Sort by length (shortest first for early exit optimization)
+		sort.Slice(keywords, func(i, j int) bool {
+			return len(keywords[i]) < len(keywords[j])
+		})
+
+		index := &ProcessMatchFieldsIndex{
+			Inst:         inst,
+			Keywords:     keywords,
+			FirstKeyword: keywords[0],
+		}
+
+		// Build reverse index using first keyword
+		m.keywordToInsts[keywords[0]] = append(m.keywordToInsts[keywords[0]], index)
 	}
 }
 
@@ -275,14 +351,22 @@ func (m *MetricSet) getPortFromEndpoint(endpoint interface{}) uint16 {
 			// Create an addressable copy of the struct
 			// This happens when endpoint comes from a map range (unaddressable)
 			structCopy := reflect.New(v.Type()).Elem()
-			structCopy.Set(v)
-			addrValue = structCopy.FieldByName("port")
+			// Check if v can be assigned to structCopy before Set operation
+			if v.Type().AssignableTo(structCopy.Type()) {
+				structCopy.Set(v)
+				addrValue = structCopy.FieldByName("port")
+			} else {
+				return 0
+			}
 		}
 
 		// Now we can safely use UnsafeAddr()
 		if addrValue.IsValid() && addrValue.CanAddr() {
 			portPtr := unsafe.Pointer(addrValue.UnsafeAddr())
-			return *(*uint16)(portPtr)
+			// Ensure pointer is valid before dereferencing
+			if portPtr != nil {
+				return *(*uint16)(portPtr)
+			}
 		}
 	}
 	return 0
@@ -444,36 +528,55 @@ func (m *MetricSet) checkInstanceAlive(
 }
 
 // checkProcessMatchFields checks process match fields against cmdlines (Branch A)
+// Returns dead process info if no process cmdline contains all keywords
 func (m *MetricSet) checkProcessMatchFields(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	var deadProcs []DeadProcessInfo
+	if len(inst.ProcessMatchFields) == 0 {
+		return nil
+	}
 
-	for _, matchField := range inst.ProcessMatchFields {
-		if matchField == "" {
-			continue // Skip empty strings
+	// Filter empty keywords
+	keywords := []string{}
+	for _, keyword := range inst.ProcessMatchFields {
+		if keyword != "" {
+			keywords = append(keywords, keyword)
 		}
+	}
 
-		if !m.isCmdlineContains(matchField, aliveData.Cmdlines) {
-			deadProcs = append(deadProcs, DeadProcessInfo{
+	if len(keywords) == 0 {
+		return nil
+	}
+
+	// Check if any process cmdline contains all keywords
+	found := false
+	for cmdline := range aliveData.Cmdlines {
+		allMatched := true
+		for _, keyword := range keywords {
+			if !strings.Contains(cmdline, keyword) {
+				allMatched = false
+				break
+			}
+		}
+		if allMatched {
+			found = true
+			break
+		}
+	}
+
+	// If no process contains all keywords, report dead process
+	if !found {
+		identifier := "/" + strings.Join(keywords, "/")
+		return []DeadProcessInfo{
+			{
 				InstanceId: inst.InstanceId,
-				Identifier: matchField,
-			})
+				Identifier: identifier,
+			},
 		}
 	}
 
-	return deadProcs
-}
-
-// isCmdlineContains checks if any cmdline contains the match field (helper method)
-func (m *MetricSet) isCmdlineContains(matchField string, aliveCmdlines map[string]bool) bool {
-	for cmdline := range aliveCmdlines {
-		if strings.Contains(cmdline, matchField) {
-			return true
-		}
-	}
-	return false
+	return nil
 }
 
 // checkProcessList checks process list (Branch B)
@@ -547,11 +650,99 @@ func (m *MetricSet) addInstanceIdDimension(
 			continue
 		}
 
-		// Use pre-built index for O(1) lookup
+		// Step 1: Try exact cmdline match (highest priority)
 		if instanceId, exists := m.cmdlineToInstId[cmdline]; exists {
-			procs[i].Put("instanceId", instanceId)
+			_, _ = procs[i].Put("instanceId", instanceId)
+			continue
+		}
+
+		// Step 2: Try port matching (fallback 1)
+		instanceId := m.findInstanceIdByPort(roots[i])
+		if instanceId != "" {
+			_, _ = procs[i].Put("instanceId", instanceId)
+			continue
+		}
+
+		// Step 3: Try ProcessMatchFields matching (fallback 2, optimized)
+		instanceId = m.findInstanceIdByProcessMatchFields(cmdline)
+		if instanceId != "" {
+			_, _ = procs[i].Put("instanceId", instanceId)
 		}
 	}
+}
+
+// findInstanceIdByPort finds instance ID by port matching
+func (m *MetricSet) findInstanceIdByPort(root mapstr.M) string {
+	// Extract PID from root (process.pid)
+	pidVal, err := root.GetValue("process.pid")
+	if err != nil {
+		// Try direct "pid" field as last resort
+		pidVal, err = root.GetValue("pid")
+	}
+	if err != nil {
+		return ""
+	}
+
+	var pidInt int
+	switch v := pidVal.(type) {
+	case int:
+		pidInt = v
+	case int64:
+		pidInt = int(v)
+	case int32:
+		pidInt = int(v)
+	case float64:
+		pidInt = int(v)
+	default:
+		return ""
+	}
+
+	if pidInt <= 0 {
+		return ""
+	}
+
+	// Get ports for this PID
+	ports := m.getProcessPorts(pidInt)
+	if len(ports) == 0 {
+		return ""
+	}
+
+	// Try to find instance ID by port (first match)
+	for _, port := range ports {
+		if instId, exists := m.portToInstId[port]; exists {
+			return instId
+		}
+	}
+
+	return ""
+}
+
+// findInstanceIdByProcessMatchFields finds instance ID by ProcessMatchFields matching (optimized scheme 4)
+func (m *MetricSet) findInstanceIdByProcessMatchFields(cmdline string) string {
+	// Find candidate instances using reverse index (first keyword)
+	candidateIndices := []*ProcessMatchFieldsIndex{}
+
+	for firstKeyword, indices := range m.keywordToInsts {
+		if strings.Contains(cmdline, firstKeyword) {
+			candidateIndices = append(candidateIndices, indices...)
+		}
+	}
+
+	// Check candidate instances (keywords are already sorted by length)
+	for _, index := range candidateIndices {
+		allMatched := true
+		for _, keyword := range index.Keywords {
+			if !strings.Contains(cmdline, keyword) {
+				allMatched = false
+				break // Early exit
+			}
+		}
+		if allMatched {
+			return index.Inst.InstanceId
+		}
+	}
+
+	return ""
 }
 
 // buildDeadProcessEvent builds an event for a dead/abnormal process
