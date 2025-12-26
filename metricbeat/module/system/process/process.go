@@ -101,7 +101,7 @@ type MetricSet struct {
 	cmdlineToInstId map[string]string // Command line → instance ID fast lookup table
 
 	// Port to instance ID mapping (mapping B)
-	portToInstId map[string]string // Port → instance ID (first match)
+	portToInstId map[string][]string // Port → instance ID list (multiple matches)
 
 	// ProcessMatchFields index (optimized matching, scheme 4)
 	keywordToInsts map[string][]*ProcessMatchFieldsIndex // Keyword → index list (reverse index)
@@ -139,7 +139,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		artifactInsts:   config.ArtifactInsts,
 		pidToPorts:      make(map[int][]string),
 		cmdlineToInstId: make(map[string]string),
-		portToInstId:    make(map[string]string),
+		portToInstId:    make(map[string][]string),
 		keywordToInsts:  make(map[string][]*ProcessMatchFieldsIndex),
 		stats: &process.Stats{
 			Procs:         config.Procs,
@@ -224,15 +224,23 @@ func (m *MetricSet) buildCmdlineToInstIdIndex() {
 }
 
 // buildPortToInstIdIndex builds a fast lookup index for port to instance ID (mapping B)
-// Takes the first match if multiple instances use the same port
+// Supports multiple instance IDs per port with deduplication
 func (m *MetricSet) buildPortToInstIdIndex() {
 	for _, inst := range m.artifactInsts {
 		for _, proc := range inst.ProcessList {
 			for _, port := range proc.Ports {
 				if port != "" {
-					// Take the first match (don't overwrite if already exists)
-					if _, exists := m.portToInstId[port]; !exists {
-						m.portToInstId[port] = inst.InstanceId
+					instIds := m.portToInstId[port]
+					// Check if instance ID already exists to avoid duplicates
+					found := false
+					for _, id := range instIds {
+						if id == inst.InstanceId {
+							found = true
+							break
+						}
+					}
+					if !found {
+						m.portToInstId[port] = append(instIds, inst.InstanceId)
 					}
 				}
 			}
@@ -413,21 +421,68 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 
 	// Report normal process metrics
 	for i := range procs {
-		// Ensure instanceId is in RootFields for dimension matching
-		if roots[i] == nil {
-			roots[i] = mapstr.M{}
-		}
-		if instanceId, exists := procs[i]["instanceId"]; exists {
-			roots[i].Put("instanceId", instanceId)
-		} else {
-			roots[i].Put("instanceId", "")
-		}
+		// Check if there are multiple matched instance IDs
+		matchedInstIdsVal, hasMultiple := procs[i]["_matched_instance_ids"]
 
-		if !r.Event(mb.Event{
-			MetricSetFields: procs[i],
-			RootFields:      roots[i],
-		}) {
-			return nil
+		if hasMultiple {
+			// Multiple instance IDs matched, clone and report for each
+			matchedInstIds, ok := matchedInstIdsVal.([]string)
+			if !ok || len(matchedInstIds) == 0 {
+				// Type error or empty, fallback to single instance handling
+				if roots[i] == nil {
+					roots[i] = mapstr.M{}
+				}
+				roots[i].Put("instanceId", "")
+				// Remove temporary field
+				procs[i].Delete("_matched_instance_ids")
+				if !r.Event(mb.Event{
+					MetricSetFields: procs[i],
+					RootFields:      roots[i],
+				}) {
+					return nil
+				}
+				continue
+			}
+
+			// Clone and report for each instance ID
+			for _, instId := range matchedInstIds {
+				procCopy := procs[i].Clone()
+				var rootCopy mapstr.M
+				if roots[i] == nil {
+					rootCopy = mapstr.M{}
+				} else {
+					rootCopy = roots[i].Clone()
+				}
+
+				// Remove temporary field and set instanceId
+				procCopy.Delete("_matched_instance_ids")
+				procCopy.Put("instanceId", instId)
+				rootCopy.Put("instanceId", instId)
+
+				if !r.Event(mb.Event{
+					MetricSetFields: procCopy,
+					RootFields:      rootCopy,
+				}) {
+					return nil
+				}
+			}
+		} else {
+			// Single or no instance ID, normal reporting
+			if roots[i] == nil {
+				roots[i] = mapstr.M{}
+			}
+			if instanceId, exists := procs[i]["instanceId"]; exists {
+				roots[i].Put("instanceId", instanceId)
+			} else {
+				roots[i].Put("instanceId", "")
+			}
+
+			if !r.Event(mb.Event{
+				MetricSetFields: procs[i],
+				RootFields:      roots[i],
+			}) {
+				return nil
+			}
 		}
 	}
 
@@ -656,23 +711,30 @@ func (m *MetricSet) addInstanceIdDimension(
 			continue
 		}
 
-		// Step 2: Try port matching (fallback 1)
-		instanceId := m.findInstanceIdByPort(roots[i])
+		// Step 2: Try ProcessMatchFields matching (fallback 1, optimized)
+		instanceId := m.findInstanceIdByProcessMatchFields(cmdline)
 		if instanceId != "" {
 			_, _ = procs[i].Put("instanceId", instanceId)
 			continue
 		}
 
-		// Step 3: Try ProcessMatchFields matching (fallback 2, optimized)
-		instanceId = m.findInstanceIdByProcessMatchFields(cmdline)
-		if instanceId != "" {
-			_, _ = procs[i].Put("instanceId", instanceId)
+		// Step 3: Try port matching (fallback 2, may return multiple instance IDs)
+		instanceIds := m.findInstanceIdsByPort(roots[i])
+		if len(instanceIds) > 0 {
+			if len(instanceIds) == 1 {
+				// Single match, set instanceId directly
+				_, _ = procs[i].Put("instanceId", instanceIds[0])
+			} else {
+				// Multiple matches, store in temporary field for later processing
+				_, _ = procs[i].Put("_matched_instance_ids", instanceIds)
+			}
 		}
 	}
 }
 
-// findInstanceIdByPort finds instance ID by port matching
-func (m *MetricSet) findInstanceIdByPort(root mapstr.M) string {
+// findInstanceIdsByPort finds instance IDs by port matching
+// Returns all matching instance IDs with deduplication
+func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 	// Extract PID from root (process.pid)
 	pidVal, err := root.GetValue("process.pid")
 	if err != nil {
@@ -680,7 +742,7 @@ func (m *MetricSet) findInstanceIdByPort(root mapstr.M) string {
 		pidVal, err = root.GetValue("pid")
 	}
 	if err != nil {
-		return ""
+		return nil
 	}
 
 	var pidInt int
@@ -694,27 +756,40 @@ func (m *MetricSet) findInstanceIdByPort(root mapstr.M) string {
 	case float64:
 		pidInt = int(v)
 	default:
-		return ""
+		return nil
 	}
 
 	if pidInt <= 0 {
-		return ""
+		return nil
 	}
 
 	// Get ports for this PID
 	ports := m.getProcessPorts(pidInt)
 	if len(ports) == 0 {
-		return ""
+		return nil
 	}
 
-	// Try to find instance ID by port (first match)
+	// Use map for deduplication
+	instIdSet := make(map[string]bool)
 	for _, port := range ports {
-		if instId, exists := m.portToInstId[port]; exists {
-			return instId
+		if port != "" {
+			if instIds, exists := m.portToInstId[port]; exists {
+				for _, instId := range instIds {
+					instIdSet[instId] = true
+				}
+			}
 		}
 	}
 
-	return ""
+	// Convert to slice
+	if len(instIdSet) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(instIdSet))
+	for instId := range instIdSet {
+		result = append(result, instId)
+	}
+	return result
 }
 
 // findInstanceIdByProcessMatchFields finds instance ID by ProcessMatchFields matching (optimized scheme 4)
