@@ -360,7 +360,7 @@ func (m *MetricSet) getPortFromEndpoint(endpoint interface{}) uint16 {
 			// This happens when endpoint comes from a map range (unaddressable)
 			structCopy := reflect.New(v.Type()).Elem()
 			// Check if v can be assigned to structCopy before Set operation
-			if v.Type().AssignableTo(structCopy.Type()) {
+			if v.Type().AssignableTo(structCopy.Type()) && structCopy.CanSet() {
 				structCopy.Set(v)
 				addrValue = structCopy.FieldByName("port")
 			} else {
@@ -712,7 +712,20 @@ func (m *MetricSet) addInstanceIdDimension(
 		}
 
 		// Step 2: Try ProcessMatchFields matching (fallback 1, optimized)
-		instanceId := m.findInstanceIdByProcessMatchFields(cmdline)
+		// Extract process name and working directory for matching
+		processName := ""
+		if nameVal, err := roots[i].GetValue("process.name"); err == nil {
+			if nameStr, ok := nameVal.(string); ok {
+				processName = nameStr
+			}
+		}
+		workingDirectory := ""
+		if wdVal, err := roots[i].GetValue("process.working_directory"); err == nil {
+			if wdStr, ok := wdVal.(string); ok {
+				workingDirectory = wdStr
+			}
+		}
+		instanceId := m.findInstanceIdByProcessMatchFields(cmdline, processName, workingDirectory)
 		if instanceId != "" {
 			_, _ = procs[i].Put("instanceId", instanceId)
 			continue
@@ -793,21 +806,40 @@ func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 }
 
 // findInstanceIdByProcessMatchFields finds instance ID by ProcessMatchFields matching (optimized scheme 4)
-func (m *MetricSet) findInstanceIdByProcessMatchFields(cmdline string) string {
+// Checks if each keyword is contained in cmdline, processName, or workingDirectory
+func (m *MetricSet) findInstanceIdByProcessMatchFields(cmdline string, processName string, workingDirectory string) string {
+	// Helper function to check if keyword is in cmdline, processName, or workingDirectory
+	containsKeyword := func(keyword string) bool {
+		if strings.Contains(cmdline, keyword) {
+			return true
+		}
+		if processName != "" && strings.Contains(processName, keyword) {
+			return true
+		}
+		if workingDirectory != "" && strings.Contains(workingDirectory, keyword) {
+			return true
+		}
+		return false
+	}
+
 	// Find candidate instances using reverse index (first keyword)
 	candidateIndices := []*ProcessMatchFieldsIndex{}
 
 	for firstKeyword, indices := range m.keywordToInsts {
-		if strings.Contains(cmdline, firstKeyword) {
+		if containsKeyword(firstKeyword) {
 			candidateIndices = append(candidateIndices, indices...)
 		}
 	}
 
 	// Check candidate instances (keywords are already sorted by length)
 	for _, index := range candidateIndices {
+		// Defensive check: skip invalid index
+		if index == nil || index.Inst == nil || len(index.Keywords) == 0 {
+			continue
+		}
 		allMatched := true
 		for _, keyword := range index.Keywords {
-			if !strings.Contains(cmdline, keyword) {
+			if !containsKeyword(keyword) {
 				allMatched = false
 				break // Early exit
 			}
