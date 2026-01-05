@@ -25,7 +25,6 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -58,18 +57,19 @@ type DeadProcessInfo struct {
 	Identifier string // Identifier (process name or command line)
 }
 
-// ProcessMatchFieldsIndex represents optimized index for ProcessMatchFields matching
-type ProcessMatchFieldsIndex struct {
-	Inst         *ArtifactInstCheck // Pointer to instance configuration
-	Keywords     []string           // Sorted keywords (shortest first)
-	FirstKeyword string             // First keyword (for reverse index)
+// AliveProcessData represents alive process data structure (performance optimized)
+// ProcessInfo stores complete process information for matching
+type ProcessInfo struct {
+	Cmdline          string
+	ProcessName      string
+	WorkingDirectory string
 }
 
-// AliveProcessData represents alive process data structure (performance optimized)
 type AliveProcessData struct {
 	ProcessNames map[string]bool // Process name set (O(1) lookup)
 	Cmdlines     map[string]bool // Command line set (O(1) lookup)
 	Ports        map[string]bool // Port set (O(1) lookup)
+	ProcessInfos []ProcessInfo   // Complete process information for matching
 }
 
 // NewAliveProcessData creates a new AliveProcessData instance
@@ -78,6 +78,7 @@ func NewAliveProcessData() *AliveProcessData {
 		ProcessNames: make(map[string]bool),
 		Cmdlines:     make(map[string]bool),
 		Ports:        make(map[string]bool),
+		ProcessInfos: make([]ProcessInfo, 0),
 	}
 }
 
@@ -102,9 +103,6 @@ type MetricSet struct {
 
 	// Port to instance ID mapping (mapping B)
 	portToInstId map[string][]string // Port → instance ID list (multiple matches)
-
-	// ProcessMatchFields index (optimized matching, scheme 4)
-	keywordToInsts map[string][]*ProcessMatchFieldsIndex // Keyword → index list (reverse index)
 }
 
 // New creates and returns a new MetricSet.
@@ -140,7 +138,6 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		pidToPorts:      make(map[int][]string),
 		cmdlineToInstId: make(map[string]string),
 		portToInstId:    make(map[string][]string),
-		keywordToInsts:  make(map[string][]*ProcessMatchFieldsIndex),
 		stats: &process.Stats{
 			Procs:         config.Procs,
 			Hostfs:        sys,
@@ -180,7 +177,6 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 	// Build performance optimization index
 	m.buildCmdlineToInstIdIndex()
 	m.buildPortToInstIdIndex()
-	m.buildProcessMatchFieldsIndex()
 
 	return m, nil
 }
@@ -245,43 +241,6 @@ func (m *MetricSet) buildPortToInstIdIndex() {
 				}
 			}
 		}
-	}
-}
-
-// buildProcessMatchFieldsIndex builds optimized index for ProcessMatchFields matching (scheme 4)
-// Uses reverse index with keyword sorting for performance optimization
-func (m *MetricSet) buildProcessMatchFieldsIndex() {
-	for i := range m.artifactInsts {
-		inst := &m.artifactInsts[i]
-		if len(inst.ProcessMatchFields) == 0 {
-			continue
-		}
-
-		// Filter empty keywords and create sorted list
-		keywords := []string{}
-		for _, keyword := range inst.ProcessMatchFields {
-			if keyword != "" {
-				keywords = append(keywords, keyword)
-			}
-		}
-
-		if len(keywords) == 0 {
-			continue
-		}
-
-		// Sort by length (shortest first for early exit optimization)
-		sort.Slice(keywords, func(i, j int) bool {
-			return len(keywords[i]) < len(keywords[j])
-		})
-
-		index := &ProcessMatchFieldsIndex{
-			Inst:         inst,
-			Keywords:     keywords,
-			FirstKeyword: keywords[0],
-		}
-
-		// Build reverse index using first keyword
-		m.keywordToInsts[keywords[0]] = append(m.keywordToInsts[keywords[0]], index)
 	}
 }
 
@@ -517,11 +476,14 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 		}
 
 		var cmdline string
+		var processName string
+		var workingDirectory string
 		var ports []string
 
 		// Extract process name from root (ECS format)
 		if nameVal, err := root.GetValue("process.name"); err == nil {
 			if nameStr, ok := nameVal.(string); ok && nameStr != "" {
+				processName = nameStr
 				data.ProcessNames[nameStr] = true
 			}
 		}
@@ -531,6 +493,13 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 			if cmdlineStr, ok := cmdlineVal.(string); ok && cmdlineStr != "" {
 				cmdline = cmdlineStr
 				data.Cmdlines[cmdline] = true
+			}
+		}
+
+		// Extract working directory from root (ECS format)
+		if wdVal, err := root.GetValue("process.working_directory"); err == nil {
+			if wdStr, ok := wdVal.(string); ok && wdStr != "" {
+				workingDirectory = wdStr
 			}
 		}
 
@@ -564,6 +533,15 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 				data.Ports[port] = true
 			}
 		}
+
+		// Store complete process information for matching
+		if cmdline != "" {
+			data.ProcessInfos = append(data.ProcessInfos, ProcessInfo{
+				Cmdline:          cmdline,
+				ProcessName:      processName,
+				WorkingDirectory: workingDirectory,
+			})
+		}
 	}
 
 	return data
@@ -574,64 +552,87 @@ func (m *MetricSet) checkInstanceAlive(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	// Branch A: processMatchFields is not empty (higher priority)
-	if len(inst.ProcessMatchFields) > 0 {
-		return m.checkProcessMatchFields(inst, aliveData)
+	// Branch A: processMatchGroups is not empty (higher priority)
+	if len(inst.ProcessMatchGroups) > 0 {
+		return m.checkProcessMatchGroups(inst, aliveData)
 	}
 	// Branch B: check processList
 	return m.checkProcessList(inst, aliveData)
 }
 
-// checkProcessMatchFields checks process match fields against cmdlines (Branch A)
-// Returns dead process info if no process cmdline contains all keywords
-func (m *MetricSet) checkProcessMatchFields(
+// checkProcessMatchGroups checks if all groups have at least one matching process
+// Returns dead process info if any group has no matching process
+func (m *MetricSet) checkProcessMatchGroups(
 	inst ArtifactInstCheck,
 	aliveData *AliveProcessData,
 ) []DeadProcessInfo {
-	if len(inst.ProcessMatchFields) == 0 {
+	if len(inst.ProcessMatchGroups) == 0 {
 		return nil
 	}
 
-	// Filter empty keywords
-	keywords := []string{}
-	for _, keyword := range inst.ProcessMatchFields {
-		if keyword != "" {
-			keywords = append(keywords, keyword)
+	var deadProcs []DeadProcessInfo
+
+	for _, group := range inst.ProcessMatchGroups {
+		// Filter empty keywords
+		keywords := filterEmptyStrings(group.Keywords)
+		if len(keywords) == 0 {
+			continue
 		}
-	}
 
-	if len(keywords) == 0 {
-		return nil
-	}
-
-	// Check if any process cmdline contains all keywords
-	found := false
-	for cmdline := range aliveData.Cmdlines {
-		allMatched := true
-		for _, keyword := range keywords {
-			if !strings.Contains(cmdline, keyword) {
-				allMatched = false
+		// Check if any process matches all keywords in this group
+		found := false
+		for _, procInfo := range aliveData.ProcessInfos {
+			if matchAllKeywords(keywords, procInfo) {
+				found = true
 				break
 			}
 		}
-		if allMatched {
-			found = true
-			break
-		}
-	}
 
-	// If no process contains all keywords, report dead process
-	if !found {
-		identifier := "/" + strings.Join(keywords, "/")
-		return []DeadProcessInfo{
-			{
+		// If no process matches this group, report as dead
+		if !found {
+			deadProcs = append(deadProcs, DeadProcessInfo{
 				InstanceId: inst.InstanceId,
-				Identifier: identifier,
-			},
+				Identifier: "/" + strings.Join(keywords, "/"),
+			})
 		}
 	}
 
-	return nil
+	return deadProcs
+}
+
+// filterEmptyStrings filters out empty strings from slice
+func filterEmptyStrings(strs []string) []string {
+	result := make([]string, 0, len(strs))
+	for _, s := range strs {
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// matchAllKeywords checks if process matches all keywords
+func matchAllKeywords(keywords []string, procInfo ProcessInfo) bool {
+	for _, keyword := range keywords {
+		if !containsKeyword(keyword, procInfo) {
+			return false
+		}
+	}
+	return true
+}
+
+// containsKeyword checks if keyword exists in cmdline, processName or workingDirectory
+func containsKeyword(keyword string, procInfo ProcessInfo) bool {
+	if strings.Contains(procInfo.Cmdline, keyword) {
+		return true
+	}
+	if procInfo.ProcessName != "" && strings.Contains(procInfo.ProcessName, keyword) {
+		return true
+	}
+	if procInfo.WorkingDirectory != "" && strings.Contains(procInfo.WorkingDirectory, keyword) {
+		return true
+	}
+	return false
 }
 
 // checkProcessList checks process list (Branch B)
@@ -711,7 +712,7 @@ func (m *MetricSet) addInstanceIdDimension(
 			continue
 		}
 
-		// Step 2: Try ProcessMatchFields matching (fallback 1, optimized)
+		// Step 2: Try ProcessMatchGroups matching (fallback 1)
 		// Extract process name and working directory for matching
 		processName := ""
 		if nameVal, err := roots[i].GetValue("process.name"); err == nil {
@@ -725,7 +726,12 @@ func (m *MetricSet) addInstanceIdDimension(
 				workingDirectory = wdStr
 			}
 		}
-		instanceId := m.findInstanceIdByProcessMatchFields(cmdline, processName, workingDirectory)
+		procInfo := ProcessInfo{
+			Cmdline:          cmdline,
+			ProcessName:      processName,
+			WorkingDirectory: workingDirectory,
+		}
+		instanceId := m.findInstanceIdByProcessMatchGroups(procInfo)
 		if instanceId != "" {
 			_, _ = procs[i].Put("instanceId", instanceId)
 			continue
@@ -746,7 +752,7 @@ func (m *MetricSet) addInstanceIdDimension(
 }
 
 // findInstanceIdsByPort finds instance IDs by port matching
-// Returns all matching instance IDs with deduplication
+// Returns all matching instance IDs where ALL process ports match the instance's configured port list
 func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 	// Extract PID from root (process.pid)
 	pidVal, err := root.GetValue("process.pid")
@@ -777,19 +783,60 @@ func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 	}
 
 	// Get ports for this PID
-	ports := m.getProcessPorts(pidInt)
-	if len(ports) == 0 {
+	processPorts := m.getProcessPorts(pidInt)
+	if len(processPorts) == 0 {
 		return nil
 	}
 
-	// Use map for deduplication
-	instIdSet := make(map[string]bool)
-	for _, port := range ports {
+	// Filter out empty ports
+	filteredProcessPorts := []string{}
+	processPortSet := make(map[string]bool)
+	for _, port := range processPorts {
 		if port != "" {
-			if instIds, exists := m.portToInstId[port]; exists {
-				for _, instId := range instIds {
-					instIdSet[instId] = true
+			filteredProcessPorts = append(filteredProcessPorts, port)
+			processPortSet[port] = true
+		}
+	}
+
+	if len(filteredProcessPorts) == 0 {
+		return nil
+	}
+
+	// Check each instance: ALL process ports must be in one of the instance's ProcessCheckItem port lists
+	instIdSet := make(map[string]bool)
+	for _, inst := range m.artifactInsts {
+		// Check each ProcessCheckItem in this instance
+		for _, procItem := range inst.ProcessList {
+			// Collect ports for this ProcessCheckItem
+			procItemPortSet := make(map[string]bool)
+			for _, port := range procItem.Ports {
+				if port != "" {
+					procItemPortSet[port] = true
 				}
+			}
+
+			// If this ProcessCheckItem has no ports configured, skip it
+			if len(procItemPortSet) == 0 {
+				continue
+			}
+
+			// Require exact port match: the process port set must equal the configured port set
+			if len(procItemPortSet) != len(filteredProcessPorts) {
+				continue
+			}
+
+			allMatched := true
+			for _, port := range filteredProcessPorts {
+				if !procItemPortSet[port] {
+					allMatched = false
+					break
+				}
+			}
+
+			if allMatched {
+				// Found a matching ProcessCheckItem, add instance ID and break
+				instIdSet[inst.InstanceId] = true
+				break // Only need to match one ProcessCheckItem per instance
 			}
 		}
 	}
@@ -805,50 +852,26 @@ func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 	return result
 }
 
-// findInstanceIdByProcessMatchFields finds instance ID by ProcessMatchFields matching (optimized scheme 4)
-// Checks if each keyword is contained in cmdline, processName, or workingDirectory
-func (m *MetricSet) findInstanceIdByProcessMatchFields(cmdline string, processName string, workingDirectory string) string {
-	// Helper function to check if keyword is in cmdline, processName, or workingDirectory
-	containsKeyword := func(keyword string) bool {
-		if strings.Contains(cmdline, keyword) {
-			return true
-		}
-		if processName != "" && strings.Contains(processName, keyword) {
-			return true
-		}
-		if workingDirectory != "" && strings.Contains(workingDirectory, keyword) {
-			return true
-		}
-		return false
-	}
-
-	// Find candidate instances using reverse index (first keyword)
-	candidateIndices := []*ProcessMatchFieldsIndex{}
-
-	for firstKeyword, indices := range m.keywordToInsts {
-		if containsKeyword(firstKeyword) {
-			candidateIndices = append(candidateIndices, indices...)
-		}
-	}
-
-	// Check candidate instances (keywords are already sorted by length)
-	for _, index := range candidateIndices {
-		// Defensive check: skip invalid index
-		if index == nil || index.Inst == nil || len(index.Keywords) == 0 {
+// findInstanceIdByProcessMatchGroups finds instance ID by matching ProcessMatchGroups
+// Returns the first matching instance ID, or empty string if no match
+func (m *MetricSet) findInstanceIdByProcessMatchGroups(procInfo ProcessInfo) string {
+	for i := range m.artifactInsts {
+		inst := &m.artifactInsts[i]
+		if len(inst.ProcessMatchGroups) == 0 {
 			continue
 		}
-		allMatched := true
-		for _, keyword := range index.Keywords {
-			if !containsKeyword(keyword) {
-				allMatched = false
-				break // Early exit
+
+		// Check if this process matches ANY group in this instance
+		for _, group := range inst.ProcessMatchGroups {
+			keywords := filterEmptyStrings(group.Keywords)
+			if len(keywords) == 0 {
+				continue
+			}
+			if matchAllKeywords(keywords, procInfo) {
+				return inst.InstanceId
 			}
 		}
-		if allMatched {
-			return index.Inst.InstanceId
-		}
 	}
-
 	return ""
 }
 

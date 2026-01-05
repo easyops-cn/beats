@@ -59,15 +59,21 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		encryptParam = "&encrypt=disable"
 	}
 
+	// Handle tlsmin parameter for TLS minimum version
+	tlsMinParam := ""
+	if tlsMinVal, ok := rowConfig["tlsMinVersion"].(string); ok && tlsMinVal != "" {
+		tlsMinParam = "&tlsmin=" + tlsMinVal
+	}
+
 	dbNameParam := "database=master"
 	uri := base.HostData().URI
 	if dbNameVal, ok := rowConfig["database"].(string); ok {
 		dbNameParam = "database=" + dbNameVal
 	}
 
-	uri = fmt.Sprintf("sqlserver://%s:%s@%s?%s%s",
+	uri = fmt.Sprintf("sqlserver://%s:%s@%s?%s%s%s",
 		base.HostData().User, base.HostData().Password,
-		base.HostData().Host, dbNameParam, encryptParam)
+		base.HostData().Host, dbNameParam, encryptParam, tlsMinParam)
 
 	db, err := mssql.NewConnection(uri)
 	if err != nil {
