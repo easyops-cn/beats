@@ -29,9 +29,9 @@ type ProcessCheckItem struct {
 }
 
 // ProcessMatchGroup represents a group of keywords for process matching
-// All keywords within a group must match (AND logic)
+// All keywords within Cmdline must match (AND logic)
 type ProcessMatchGroup struct {
-	Keywords []string `config:"keywords"` // All keywords must match (AND logic)
+	Cmdline []string `config:"cmdline"` // All keywords must match (AND logic)
 }
 
 // ArtifactInstCheck represents deployment instance check configuration

@@ -85,7 +85,7 @@ func TestMultiInstanceConfig(t *testing.T) {
 			{
 				"instanceId": "test-instance-1",
 				"processMatchGroups": []map[string]interface{}{
-					{"keywords": []string{"test-process"}},
+					{"cmdline": []string{"test-process"}},
 				},
 				"processList": []map[string]interface{}{
 					{
@@ -107,7 +107,7 @@ func TestMultiInstanceConfig(t *testing.T) {
 	assert.Equal(t, 1, len(ms.artifactInsts))
 	assert.Equal(t, "test-instance-1", ms.artifactInsts[0].InstanceId)
 	assert.Equal(t, 1, len(ms.artifactInsts[0].ProcessMatchGroups))
-	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchGroups[0].Keywords[0])
+	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchGroups[0].Cmdline[0])
 }
 
 // TestProcessMatchGroupsWithSamePort tests the scenario where two instances
@@ -124,7 +124,7 @@ func TestProcessMatchGroupsWithSamePort(t *testing.T) {
 			{
 				"instanceId": "inst-kafka-broker",
 				"processMatchGroups": []map[string]interface{}{
-					{"keywords": []string{"kafka", "broker"}},
+					{"cmdline": []string{"kafka", "broker"}},
 				},
 				"processList": []map[string]interface{}{
 					{
@@ -136,7 +136,7 @@ func TestProcessMatchGroupsWithSamePort(t *testing.T) {
 			{
 				"instanceId": "inst-kafka-zookeeper",
 				"processMatchGroups": []map[string]interface{}{
-					{"keywords": []string{"kafka", "zookeeper"}},
+					{"cmdline": []string{"kafka", "zookeeper"}},
 				},
 				"processList": []map[string]interface{}{
 					{
@@ -513,7 +513,7 @@ func TestDeadProcessDetection(t *testing.T) {
 			{
 				"instanceId": "inst-kafka",
 				"processMatchGroups": []map[string]interface{}{
-					{"keywords": []string{"kafka", "broker"}},
+					{"cmdline": []string{"kafka", "broker"}},
 				},
 			},
 			{
