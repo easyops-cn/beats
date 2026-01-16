@@ -6,6 +6,7 @@ package mssql
 
 import (
 	"database/sql"
+	"strings"
 
 	// Register driver.
 	_ "github.com/denisenkom/go-mssqldb"
@@ -27,4 +28,21 @@ func NewConnection(uri string) (*sql.DB, error) {
 	}
 
 	return db, err
+}
+
+// BuildURI constructs a connection URI with optional parameters from module config.
+// It appends tlsmin parameter if tlsMinVersion is configured.
+func BuildURI(baseURI string, config map[string]interface{}) string {
+	uri := baseURI
+
+	// Append tlsmin parameter if configured
+	if tlsMinVal, ok := config["tlsMinVersion"].(string); ok && tlsMinVal != "" {
+		if strings.Contains(uri, "?") {
+			uri = uri + "&tlsmin=" + tlsMinVal
+		} else {
+			uri = uri + "?tlsmin=" + tlsMinVal
+		}
+	}
+
+	return uri
 }

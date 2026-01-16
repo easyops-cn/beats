@@ -29,6 +29,7 @@ import (
 	mbtest "github.com/elastic/beats/v7/metricbeat/mb/testing"
 	_ "github.com/elastic/beats/v7/metricbeat/module/system"
 	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/elastic/elastic-agent-system-metrics/metric/system/process"
 )
 
@@ -82,8 +83,10 @@ func TestMultiInstanceConfig(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":         "test-instance-1",
-				"processMatchFields": []string{"test-process"},
+				"instanceId": "test-instance-1",
+				"processMatchGroups": []map[string]interface{}{
+					{"cmdline": []string{"test-process"}},
+				},
 				"processList": []map[string]interface{}{
 					{
 						"cmdline": "/usr/bin/test",
@@ -103,209 +106,42 @@ func TestMultiInstanceConfig(t *testing.T) {
 	assert.NotNil(t, ms)
 	assert.Equal(t, 1, len(ms.artifactInsts))
 	assert.Equal(t, "test-instance-1", ms.artifactInsts[0].InstanceId)
-	assert.Equal(t, 1, len(ms.artifactInsts[0].ProcessMatchFields))
-	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchFields[0])
+	assert.Equal(t, 1, len(ms.artifactInsts[0].ProcessMatchGroups))
+	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchGroups[0].Cmdline[0])
 }
 
-// TestMetricDataGeneration tests the complete metric data generation flow
-func TestMetricDataGeneration(t *testing.T) {
+// TestProcessMatchGroupsWithSamePort tests the scenario where two instances
+// have different ProcessMatchGroups but same port, and cmdline changes
+func TestProcessMatchGroupsWithSamePort(t *testing.T) {
 	logp.DevelopmentSetup()
 
-	// Test configuration with processList mode
+	// Configuration: two instances with same port but different keywords
 	config := map[string]interface{}{
 		"module":     "system",
 		"metricsets": []string{"process"},
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":         "inst-test-001",
-				"processMatchFields": []string{}, // Empty, use processList mode
+				"instanceId": "inst-kafka-broker",
+				"processMatchGroups": []map[string]interface{}{
+					{"cmdline": []string{"kafka", "broker"}},
+				},
 				"processList": []map[string]interface{}{
 					{
-						"cmdline": "/usr/bin/nginx",
-						"ports":   []string{"80", "443"},
+						"cmdline": "/usr/bin/kafka-server-old", // cmdline may change
+						"ports":   []string{"9092"},
 					},
 				},
 			},
-		},
-	}
-
-	f := mbtest.NewReportingMetricSetV2Error(t, config)
-	events, errs := mbtest.ReportingFetchV2Error(f)
-
-	// Verify no errors
-	assert.Empty(t, errs, "Should not have errors")
-	assert.NotEmpty(t, events, "Should have events")
-
-	// Verify events structure
-	for _, event := range events {
-		beatEvent := event.BeatEvent("system", "process")
-		fields := beatEvent.Fields
-
-		// Check if event has process data
-		if processData, exists := fields["process"]; exists {
-			processMap, ok := processData.(map[string]interface{})
-			if ok {
-				// Check if instanceId is added to matching processes
-				if cmdline, exists := processMap["command_line"]; exists {
-					cmdlineStr, ok := cmdline.(string)
-					if ok && cmdlineStr == "/usr/bin/nginx" {
-						// This process should have instanceId
-						if instanceId, exists := fields["instanceId"]; exists {
-							assert.Equal(t, "inst-test-001", instanceId, "Matching process should have instanceId")
-							t.Logf("✓ Found process with instanceId: cmdline=%s, instanceId=%v", cmdlineStr, instanceId)
-						}
-					}
-				}
-			}
-		}
-
-		// Check for abnormal process events (alive_state = 1)
-		if systemData, exists := fields["system"]; exists {
-			if systemMap, ok := systemData.(map[string]interface{}); ok {
-				if processData, exists := systemMap["process"]; exists {
-					if processMap, ok := processData.(map[string]interface{}); ok {
-						if aliveState, exists := processMap["alive_state"]; exists {
-							aliveStateInt, ok := aliveState.(int)
-							if ok && aliveStateInt == 1 {
-								// This is an abnormal process event
-								if instanceId, exists := fields["instanceId"]; exists {
-									t.Logf("✓ Found abnormal process event: instanceId=%v, alive_state=1", instanceId)
-									// Verify it has the expected structure
-									if processData, exists := fields["process"]; exists {
-										if processMap, ok := processData.(map[string]interface{}); ok {
-											if cmdline, exists := processMap["command_line"]; exists {
-												t.Logf("  - command_line: %v", cmdline)
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	t.Logf("Total events generated: %d", len(events))
-}
-
-// TestCheckProcessMatchFieldsMode tests the processMatchFields mode
-func TestCheckProcessMatchFieldsMode(t *testing.T) {
-	logp.DevelopmentSetup()
-
-	// Test configuration with processMatchFields mode
-	config := map[string]interface{}{
-		"module":     "system",
-		"metricsets": []string{"process"},
-		"processes":  []string{".*"},
-		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":         "inst-names-001",
-				"processMatchFields": []string{"java", "elasticsearch"}, // Use processMatchFields mode
-				"processList":        []map[string]interface{}{},
-			},
-		},
-	}
-
-	f := mbtest.NewReportingMetricSetV2Error(t, config)
-	events, errs := mbtest.ReportingFetchV2Error(f)
-
-	// Verify no errors
-	assert.Empty(t, errs, "Should not have errors")
-	assert.NotEmpty(t, events, "Should have events")
-
-	// Check for abnormal events if processes are missing
-	abnormalCount := 0
-	for _, event := range events {
-		beatEvent := event.BeatEvent("system", "process")
-		fields := beatEvent.Fields
-
-		if systemData, exists := fields["system"]; exists {
-			if systemMap, ok := systemData.(map[string]interface{}); ok {
-				if processData, exists := systemMap["process"]; exists {
-					if processMap, ok := processData.(map[string]interface{}); ok {
-						if aliveState, exists := processMap["alive_state"]; exists {
-							aliveStateInt, ok := aliveState.(int)
-							if ok && aliveStateInt == 1 {
-								abnormalCount++
-								if instanceId, exists := fields["instanceId"]; exists {
-									t.Logf("✓ Abnormal process event: instanceId=%v", instanceId)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	t.Logf("Total events: %d, Abnormal events: %d", len(events), abnormalCount)
-}
-
-// TestInstanceIdDimension tests that instanceId is correctly added to matching processes
-func TestInstanceIdDimension(t *testing.T) {
-	logp.DevelopmentSetup()
-
-	// Use a process that likely exists on the system (like shell or system process)
-	config := map[string]interface{}{
-		"module":     "system",
-		"metricsets": []string{"process"},
-		"processes":  []string{".*"},
-		"artifactInsts": []map[string]interface{}{
-			{
-				"instanceId":         "inst-dimension-test",
-				"processMatchFields": []string{},
-				"processList": []map[string]interface{}{
-					// Use a common process that might exist
-					// Note: This is a test, actual cmdline matching requires exact match
-					{
-						"cmdline": "/bin/sh",
-						"ports":   []string{},
-					},
+				"instanceId": "inst-kafka-zookeeper",
+				"processMatchGroups": []map[string]interface{}{
+					{"cmdline": []string{"kafka", "zookeeper"}},
 				},
-			},
-		},
-	}
-
-	f := mbtest.NewReportingMetricSetV2Error(t, config)
-	events, errs := mbtest.ReportingFetchV2Error(f)
-
-	assert.Empty(t, errs, "Should not have errors")
-	assert.NotEmpty(t, events, "Should have events")
-
-	// Count events with instanceId
-	instanceIdCount := 0
-	for _, event := range events {
-		beatEvent := event.BeatEvent("system", "process")
-		fields := beatEvent.Fields
-
-		if instanceId, exists := fields["instanceId"]; exists {
-			instanceIdCount++
-			t.Logf("✓ Event with instanceId: %v", instanceId)
-		}
-	}
-
-	t.Logf("Total events: %d, Events with instanceId: %d", len(events), instanceIdCount)
-}
-
-// TestPortCollection tests port collection functionality
-func TestPortCollection(t *testing.T) {
-	logp.DevelopmentSetup()
-
-	config := map[string]interface{}{
-		"module":     "system",
-		"metricsets": []string{"process"},
-		"processes":  []string{".*"},
-		"artifactInsts": []map[string]interface{}{
-			{
-				"instanceId":         "inst-port-test",
-				"processMatchFields": []string{},
 				"processList": []map[string]interface{}{
 					{
-						"cmdline": "/usr/bin/test-service",
-						"ports":   []string{"8080", "9090"},
+						"cmdline": "/usr/bin/kafka-zookeeper-old", // cmdline may change
+						"ports":   []string{"9092"},               // Same port
 					},
 				},
 			},
@@ -315,56 +151,358 @@ func TestPortCollection(t *testing.T) {
 	f := mbtest.NewReportingMetricSetV2Error(t, config)
 	ms, ok := f.(*MetricSet)
 	assert.True(t, ok, "Should be *MetricSet")
+	assert.NotNil(t, ms)
 
-	// Verify port watcher is initialized when ports are configured
-	if ms.needPortCollection() {
-		assert.NotNil(t, ms.portWatcher, "Port watcher should be initialized when ports are configured")
-		t.Logf("✓ Port watcher initialized: %v", ms.portWatcher != nil)
-	} else {
-		t.Logf("ℹ Port collection not needed (no ports configured)")
-	}
+	// Test 1: Verify index building
+	t.Run("IndexBuilding", func(t *testing.T) {
+		// Verify both instances are indexed
+		assert.Equal(t, 2, len(ms.artifactInsts))
 
-	// Test Fetch to trigger port collection
-	events, errs := mbtest.ReportingFetchV2Error(f)
-	assert.Empty(t, errs, "Should not have errors")
-	t.Logf("✓ Fetch completed, generated %d events", len(events))
+		// Verify port 9092 maps to both instances
+		instIds9092 := ms.portToInstId["9092"]
+		assert.NotNil(t, instIds9092, "Port 9092 should have instance IDs")
+		assert.Equal(t, 2, len(instIds9092), "Port 9092 should map to 2 instance IDs")
+
+		t.Logf("✓ Index building verified:")
+		t.Logf("  - Port 9092 maps to: %v", instIds9092)
+	})
+
+	// Test 2: Verify ProcessMatchGroups matching with changed cmdline
+	t.Run("ProcessMatchGroupsMatching", func(t *testing.T) {
+		// Simulate process with changed cmdline but matching keywords
+		// Process 1: cmdline changed but contains "kafka" and "broker"
+		procInfo1 := ProcessInfo{
+			Cmdline:     "/opt/kafka/bin/kafka-server-new --broker-id=1",
+			ProcessName: "java",
+		}
+
+		instanceId1 := ms.findInstanceIdByProcessMatchGroups(procInfo1)
+		assert.Equal(t, "inst-kafka-broker", instanceId1, "Should match inst-kafka-broker")
+
+		// Process 2: cmdline changed but contains "kafka" and "zookeeper"
+		procInfo2 := ProcessInfo{
+			Cmdline:     "/opt/kafka/bin/kafka-zookeeper-new --zk-port=2181",
+			ProcessName: "java",
+		}
+
+		instanceId2 := ms.findInstanceIdByProcessMatchGroups(procInfo2)
+		assert.Equal(t, "inst-kafka-zookeeper", instanceId2, "Should match inst-kafka-zookeeper")
+
+		// Process 3: cmdline changed but only contains "kafka" (should not match)
+		procInfo3 := ProcessInfo{
+			Cmdline:     "/opt/kafka/bin/kafka-client",
+			ProcessName: "java",
+		}
+
+		instanceId3 := ms.findInstanceIdByProcessMatchGroups(procInfo3)
+		assert.Empty(t, instanceId3, "Should not match any instance (missing keywords)")
+
+		t.Logf("✓ ProcessMatchGroups matching verified:")
+		t.Logf("  - Process 1 (kafka+broker): matched %s", instanceId1)
+		t.Logf("  - Process 2 (kafka+zookeeper): matched %s", instanceId2)
+		t.Logf("  - Process 3 (kafka only): matched %s (expected empty)", instanceId3)
+	})
+
+	// Test 3: Verify matching with processName
+	t.Run("ProcessMatchGroupsWithProcessName", func(t *testing.T) {
+		// Process with keywords in processName instead of cmdline
+		procInfo1 := ProcessInfo{
+			Cmdline:     "/usr/bin/java -jar app.jar",
+			ProcessName: "kafka-broker-server",
+		}
+
+		instanceId1 := ms.findInstanceIdByProcessMatchGroups(procInfo1)
+		assert.Equal(t, "inst-kafka-broker", instanceId1, "Should match via processName")
+
+		procInfo2 := ProcessInfo{
+			Cmdline:     "/usr/bin/java -jar app.jar",
+			ProcessName: "kafka-zookeeper-server",
+		}
+
+		instanceId2 := ms.findInstanceIdByProcessMatchGroups(procInfo2)
+		assert.Equal(t, "inst-kafka-zookeeper", instanceId2, "Should match via processName")
+
+		t.Logf("✓ ProcessMatchGroups with processName verified:")
+		t.Logf("  - Process 1 (processName contains kafka+broker): matched %s", instanceId1)
+		t.Logf("  - Process 2 (processName contains kafka+zookeeper): matched %s", instanceId2)
+	})
+
+	// Test 4: Verify fallback to port matching when ProcessMatchGroups fails
+	t.Run("FallbackToPortMatching", func(t *testing.T) {
+		// Mock pidToPorts to simulate a process listening on port 9092
+		ms.pidToPorts = map[int][]string{
+			12345: {"9092"},
+		}
+
+		// Create mock root with PID and cmdline that doesn't match keywords
+		root := mapstr.M{
+			"process.pid":          12345,
+			"process.command_line": "/usr/bin/unknown-process",
+			"process.name":         "unknown",
+		}
+
+		// Test addInstanceIdDimension logic
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{root}
+
+		// Call addInstanceIdDimension
+		ms.addInstanceIdDimension(procs, roots)
+
+		// Since ProcessMatchGroups won't match, it should fallback to port matching
+		// Port 9092 matches both instances, so _matched_instance_ids should be set
+		matchedInstIdsVal, hasMultiple := procs[0]["_matched_instance_ids"]
+		assert.True(t, hasMultiple, "Should have _matched_instance_ids when port matches multiple instances")
+
+		matchedInstIds, ok := matchedInstIdsVal.([]string)
+		assert.True(t, ok, "Should be []string type")
+		assert.Equal(t, 2, len(matchedInstIds), "Should match both instances via port")
+
+		t.Logf("✓ Fallback to port matching verified:")
+		t.Logf("  - Process with unmatched cmdline but port 9092")
+		t.Logf("  - Matched instance IDs via port: %v", matchedInstIds)
+	})
+
+	// Test 5: Verify priority: ProcessMatchGroups > Port matching
+	t.Run("PriorityOrder", func(t *testing.T) {
+		// Mock pidToPorts
+		ms.pidToPorts = map[int][]string{
+			99999: {"9092"},
+		}
+
+		// Process with matching keywords (should use ProcessMatchGroups, not port)
+		root := mapstr.M{
+			"process.pid":          99999,
+			"process.command_line": "/opt/kafka/bin/kafka-server-new --broker-id=1",
+			"process.name":         "java",
+		}
+
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.7},
+			},
+		}
+		roots := []mapstr.M{root}
+
+		ms.addInstanceIdDimension(procs, roots)
+
+		// Should match via ProcessMatchGroups, not port
+		instanceId, exists := procs[0]["instanceId"]
+		assert.True(t, exists, "Should have instanceId")
+		assert.Equal(t, "inst-kafka-broker", instanceId, "Should match via ProcessMatchGroups, not port")
+
+		// Should not have _matched_instance_ids (port matching not reached)
+		_, hasMultiple := procs[0]["_matched_instance_ids"]
+		assert.False(t, hasMultiple, "Should not have _matched_instance_ids when ProcessMatchGroups matches")
+
+		t.Logf("✓ Priority order verified:")
+		t.Logf("  - Process with matching keywords: matched %s via ProcessMatchGroups", instanceId)
+		t.Logf("  - Port matching was not used (correct priority)")
+	})
+
+	// Test 6: Verify ProcessMatchGroups with workingDirectory
+	t.Run("ProcessMatchGroupsWithWorkingDirectory", func(t *testing.T) {
+		// Process with keywords in workingDirectory
+		procInfo1 := ProcessInfo{
+			Cmdline:          "/usr/bin/java -jar app.jar",
+			ProcessName:      "java",
+			WorkingDirectory: "/opt/kafka/broker",
+		}
+
+		instanceId1 := ms.findInstanceIdByProcessMatchGroups(procInfo1)
+		assert.Equal(t, "inst-kafka-broker", instanceId1, "Should match via workingDirectory")
+
+		procInfo2 := ProcessInfo{
+			Cmdline:          "/usr/bin/java -jar app.jar",
+			ProcessName:      "java",
+			WorkingDirectory: "/opt/kafka/zookeeper",
+		}
+
+		instanceId2 := ms.findInstanceIdByProcessMatchGroups(procInfo2)
+		assert.Equal(t, "inst-kafka-zookeeper", instanceId2, "Should match via workingDirectory")
+
+		t.Logf("✓ ProcessMatchGroups with workingDirectory verified:")
+		t.Logf("  - Process 1 (workingDirectory contains kafka+broker): matched %s", instanceId1)
+		t.Logf("  - Process 2 (workingDirectory contains kafka+zookeeper): matched %s", instanceId2)
+	})
 }
 
-// TestEmptyConfig tests backward compatibility with empty artifactInsts
-func TestEmptyConfig(t *testing.T) {
+// TestPortMatchingAllPortsRequired tests the port matching logic where ALL ports must match
+func TestPortMatchingAllPortsRequired(t *testing.T) {
 	logp.DevelopmentSetup()
 
-	// Test with empty artifactInsts (backward compatibility)
+	// Configuration: two instances with different port configurations
 	config := map[string]interface{}{
-		"module":        "system",
-		"metricsets":    []string{"process"},
-		"processes":     []string{".*"},
-		"artifactInsts": []map[string]interface{}{}, // Empty array
+		"module":     "system",
+		"metricsets": []string{"process"},
+		"processes":  []string{".*"},
+		"artifactInsts": []map[string]interface{}{
+			{
+				"instanceId": "inst-nginx-1",
+				"processList": []map[string]interface{}{
+					{
+						"cmdline": "C:\\hifar\\nginx\\nginx.exe",
+						"ports":   []string{"6001", "6002"},
+					},
+				},
+			},
+			{
+				"instanceId": "inst-nginx-2",
+				"processList": []map[string]interface{}{
+					{
+						"cmdline": "C:\\hifar\\nginx\\nginx.exe",
+						"ports":   []string{"6001"},
+					},
+				},
+			},
+		},
 	}
 
 	f := mbtest.NewReportingMetricSetV2Error(t, config)
-	events, errs := mbtest.ReportingFetchV2Error(f)
+	ms, ok := f.(*MetricSet)
+	assert.True(t, ok, "Should be *MetricSet")
+	assert.NotNil(t, ms)
 
-	// Should work normally without errors
-	assert.Empty(t, errs, "Should not have errors")
-	assert.NotEmpty(t, events, "Should have events")
-
-	// Should not have instanceId in events (no matching configured)
-	instanceIdCount := 0
-	for _, event := range events {
-		beatEvent := event.BeatEvent("system", "process")
-		fields := beatEvent.Fields
-		if _, exists := fields["instanceId"]; exists {
-			instanceIdCount++
+	// Test 1: Process with all ports matching instance 1
+	t.Run("AllPortsMatchInstance1", func(t *testing.T) {
+		ms.pidToPorts = map[int][]string{
+			1001: {"6001", "6002"},
 		}
-	}
 
-	assert.Equal(t, 0, instanceIdCount, "Should not have instanceId when artifactInsts is empty")
-	t.Logf("✓ Backward compatibility verified: %d events, %d with instanceId", len(events), instanceIdCount)
+		// Use different cmdline to avoid exact cmdline match
+		root := mapstr.M{
+			"process.pid":          1001,
+			"process.command_line": "C:\\hifar\\nginx\\nginx-new.exe",
+		}
+
+		procs := []mapstr.M{{"cpu": mapstr.M{"pct": 0.5}}}
+		roots := []mapstr.M{root}
+
+		ms.addInstanceIdDimension(procs, roots)
+
+		// Should match instance 1 (all ports: 6001, 6002 match)
+		instanceId, exists := procs[0]["instanceId"]
+		assert.True(t, exists, "Should have instanceId")
+		assert.Equal(t, "inst-nginx-1", instanceId, "Should match inst-nginx-1 (all ports match)")
+
+		t.Logf("✓ All ports match instance 1 verified")
+	})
+
+	// Test 2: Process with only one port (should not match instance 1, but match instance 2)
+	t.Run("PartialPortsMatch", func(t *testing.T) {
+		ms.pidToPorts = map[int][]string{
+			1002: {"6001"},
+		}
+
+		// Use different cmdline to avoid exact cmdline match
+		root := mapstr.M{
+			"process.pid":          1002,
+			"process.command_line": "C:\\hifar\\nginx\\nginx-new.exe",
+		}
+
+		procs := []mapstr.M{{"cpu": mapstr.M{"pct": 0.5}}}
+		roots := []mapstr.M{root}
+
+		ms.addInstanceIdDimension(procs, roots)
+
+		// Should match instance 2 (only port 6001 matches, which is sufficient for instance 2)
+		instanceId, exists := procs[0]["instanceId"]
+		assert.True(t, exists, "Should have instanceId")
+		assert.Equal(t, "inst-nginx-2", instanceId, "Should match inst-nginx-2 (port 6001 matches)")
+
+		t.Logf("✓ Partial ports match verified")
+	})
+
+	// Test 3: Process with extra port (should not match any instance)
+	t.Run("ExtraPortNotMatching", func(t *testing.T) {
+		ms.pidToPorts = map[int][]string{
+			1003: {"6001", "6002", "6003"},
+		}
+
+		// Use different cmdline to avoid exact cmdline match
+		root := mapstr.M{
+			"process.pid":          1003,
+			"process.command_line": "C:\\hifar\\nginx\\nginx-new.exe",
+		}
+
+		procs := []mapstr.M{{"cpu": mapstr.M{"pct": 0.5}}}
+		roots := []mapstr.M{root}
+
+		ms.addInstanceIdDimension(procs, roots)
+
+		// Should not match instance 1 (has extra port 6003)
+		// Should not match instance 2 (has extra ports 6002, 6003)
+		instanceId, exists := procs[0]["instanceId"]
+		if exists {
+			assert.Empty(t, instanceId, "Should not match any instance (has extra ports)")
+		}
+
+		t.Logf("✓ Extra port not matching verified")
+	})
+
+	// Test 4: Process with multiple ports matching multiple instances
+	t.Run("MultipleInstancesMatch", func(t *testing.T) {
+		// Create a new config where both instances share port 6001
+		config2 := map[string]interface{}{
+			"module":     "system",
+			"metricsets": []string{"process"},
+			"processes":  []string{".*"},
+			"artifactInsts": []map[string]interface{}{
+				{
+					"instanceId": "inst-app-1",
+					"processList": []map[string]interface{}{
+						{
+							"cmdline": "/usr/bin/app",
+							"ports":   []string{"6001", "6002"},
+						},
+					},
+				},
+				{
+					"instanceId": "inst-app-2",
+					"processList": []map[string]interface{}{
+						{
+							"cmdline": "/usr/bin/app",
+							"ports":   []string{"6001", "6003"},
+						},
+					},
+				},
+			},
+		}
+
+		f2 := mbtest.NewReportingMetricSetV2Error(t, config2)
+		ms2, ok2 := f2.(*MetricSet)
+		assert.True(t, ok2)
+
+		// Process with ports 6001, 6002 (matches instance 1)
+		ms2.pidToPorts = map[int][]string{
+			2001: {"6001", "6002"},
+		}
+
+		// Use different cmdline to avoid exact cmdline match
+		root := mapstr.M{
+			"process.pid":          2001,
+			"process.command_line": "/usr/bin/app-new",
+		}
+
+		procs := []mapstr.M{{"cpu": mapstr.M{"pct": 0.5}}}
+		roots := []mapstr.M{root}
+
+		ms2.addInstanceIdDimension(procs, roots)
+
+		// Should match only instance 1 (all ports match)
+		instanceId, exists := procs[0]["instanceId"]
+		assert.True(t, exists, "Should have instanceId")
+		assert.Equal(t, "inst-app-1", instanceId, "Should match inst-app-1 (all ports: 6001, 6002 match)")
+
+		t.Logf("✓ Multiple instances match verified")
+	})
 }
 
-// TestMetricDataStructure tests the detailed structure of generated metric data
-func TestMetricDataStructure(t *testing.T) {
+// TestDeadProcessDetection tests the dead process detection logic
+func TestDeadProcessDetection(t *testing.T) {
 	logp.DevelopmentSetup()
 
 	config := map[string]interface{}{
@@ -373,12 +511,17 @@ func TestMetricDataStructure(t *testing.T) {
 		"processes":  []string{".*"},
 		"artifactInsts": []map[string]interface{}{
 			{
-				"instanceId":         "inst-structure-test",
-				"processMatchFields": []string{},
+				"instanceId": "inst-kafka",
+				"processMatchGroups": []map[string]interface{}{
+					{"cmdline": []string{"kafka", "broker"}},
+				},
+			},
+			{
+				"instanceId": "inst-nginx",
 				"processList": []map[string]interface{}{
 					{
-						"cmdline": "/bin/sh",
-						"ports":   []string{},
+						"cmdline": "C:\\hifar\\nginx\\nginx.exe",
+						"ports":   []string{"6001", "6002"},
 					},
 				},
 			},
@@ -386,66 +529,172 @@ func TestMetricDataStructure(t *testing.T) {
 	}
 
 	f := mbtest.NewReportingMetricSetV2Error(t, config)
-	events, errs := mbtest.ReportingFetchV2Error(f)
+	ms, ok := f.(*MetricSet)
+	assert.True(t, ok, "Should be *MetricSet")
+	assert.NotNil(t, ms)
 
-	assert.Empty(t, errs, "Should not have errors")
-	assert.NotEmpty(t, events, "Should have events")
-
-	// Analyze event structure
-	normalEventCount := 0
-	abnormalEventCount := 0
-	instanceIdEventCount := 0
-
-	for _, event := range events {
-		beatEvent := event.BeatEvent("system", "process")
-		fields := beatEvent.Fields
-
-		// Check for instanceId
-		if instanceId, exists := fields["instanceId"]; exists {
-			instanceIdEventCount++
-			t.Logf("✓ Event with instanceId: %v", instanceId)
+	// Test 1: Dead process detection for ProcessMatchGroups (Branch A)
+	t.Run("DeadProcessProcessMatchGroups", func(t *testing.T) {
+		// No alive processes with matching keywords
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{
+			{
+				"process.pid":          1001,
+				"process.command_line": "/usr/bin/java -jar other-app.jar",
+				"process.name":         "java",
+			},
 		}
 
-		// Check for normal process event
-		if processData, exists := fields["process"]; exists {
-			if processMap, ok := processData.(map[string]interface{}); ok {
-				if _, hasPid := processMap["pid"]; hasPid {
-					normalEventCount++
-				}
-			}
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[0], aliveData)
+
+		// Should detect dead process
+		assert.Equal(t, 1, len(deadProcs), "Should detect dead process")
+		assert.Equal(t, "inst-kafka", deadProcs[0].InstanceId)
+		assert.Equal(t, "/kafka/broker", deadProcs[0].Identifier)
+
+		t.Logf("✓ Dead process detection for ProcessMatchGroups verified")
+	})
+
+	// Test 2: Alive process for ProcessMatchGroups (should not report dead)
+	t.Run("AliveProcessProcessMatchGroups", func(t *testing.T) {
+		// Process with matching keywords
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{
+			{
+				"process.pid":          1002,
+				"process.command_line": "/opt/kafka/bin/kafka-server --broker-id=1",
+				"process.name":         "java",
+			},
 		}
 
-		// Check for abnormal process event (alive_state = 1)
-		if systemData, exists := fields["system"]; exists {
-			if systemMap, ok := systemData.(map[string]interface{}); ok {
-				if processData, exists := systemMap["process"]; exists {
-					if processMap, ok := processData.(map[string]interface{}); ok {
-						if aliveState, exists := processMap["alive_state"]; exists {
-							if aliveStateInt, ok := aliveState.(int); ok && aliveStateInt == 1 {
-								abnormalEventCount++
-								// Verify abnormal event structure
-								assert.Contains(t, fields, "instanceId", "Abnormal event should have instanceId")
-								if processData, exists := fields["process"]; exists {
-									if processMap, ok := processData.(map[string]interface{}); ok {
-										if cmdline, exists := processMap["command_line"]; exists {
-											t.Logf("✓ Abnormal event: instanceId=%v, cmdline=%v", fields["instanceId"], cmdline)
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[0], aliveData)
+
+		// Should not detect dead process
+		assert.Equal(t, 0, len(deadProcs), "Should not detect dead process when alive")
+
+		t.Logf("✓ Alive process for ProcessMatchGroups verified")
+	})
+
+	// Test 3: Dead process detection for ProcessList (Branch B)
+	t.Run("DeadProcessProcessList", func(t *testing.T) {
+		// No alive processes with matching cmdline or ports
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
 		}
-	}
+		roots := []mapstr.M{
+			{
+				"process.pid":          1003,
+				"process.command_line": "/usr/bin/other-process",
+				"process.name":         "other",
+			},
+		}
 
-	t.Logf("Event analysis:")
-	t.Logf("  - Total events: %d", len(events))
-	t.Logf("  - Normal process events: %d", normalEventCount)
-	t.Logf("  - Abnormal process events: %d", abnormalEventCount)
-	t.Logf("  - Events with instanceId: %d", instanceIdEventCount)
+		ms.pidToPorts = map[int][]string{
+			1003: {"8080"},
+		}
 
-	// Verify at least some events were generated
-	assert.Greater(t, normalEventCount, 0, "Should have normal process events")
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[1], aliveData)
+
+		// Should detect dead process (neither cmdline nor ports match)
+		assert.Equal(t, 1, len(deadProcs), "Should detect dead process")
+		assert.Equal(t, "inst-nginx", deadProcs[0].InstanceId)
+		assert.Equal(t, "C:\\hifar\\nginx\\nginx.exe", deadProcs[0].Identifier)
+
+		t.Logf("✓ Dead process detection for ProcessList verified")
+	})
+
+	// Test 4: Alive process for ProcessList (cmdline matches)
+	t.Run("AliveProcessProcessListCmdline", func(t *testing.T) {
+		// Process with matching cmdline
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{
+			{
+				"process.pid":          1004,
+				"process.command_line": "C:\\hifar\\nginx\\nginx.exe",
+				"process.name":         "nginx",
+			},
+		}
+
+		ms.pidToPorts = map[int][]string{}
+
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[1], aliveData)
+
+		// Should not detect dead process (cmdline matches)
+		assert.Equal(t, 0, len(deadProcs), "Should not detect dead process when cmdline matches")
+
+		t.Logf("✓ Alive process for ProcessList (cmdline) verified")
+	})
+
+	// Test 5: Alive process for ProcessList (ports match)
+	t.Run("AliveProcessProcessListPorts", func(t *testing.T) {
+		// Process with matching ports
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{
+			{
+				"process.pid":          1005,
+				"process.command_line": "/usr/bin/nginx",
+				"process.name":         "nginx",
+			},
+		}
+
+		ms.pidToPorts = map[int][]string{
+			1005: {"6001"},
+		}
+
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[1], aliveData)
+
+		// Should not detect dead process (ports match)
+		assert.Equal(t, 0, len(deadProcs), "Should not detect dead process when ports match")
+
+		t.Logf("✓ Alive process for ProcessList (ports) verified")
+	})
+
+	// Test 6: Dead process detection with workingDirectory
+	t.Run("DeadProcessWithWorkingDirectory", func(t *testing.T) {
+		// Process with keywords in workingDirectory
+		procs := []mapstr.M{
+			{
+				"cpu": mapstr.M{"pct": 0.5},
+			},
+		}
+		roots := []mapstr.M{
+			{
+				"process.pid":               1006,
+				"process.command_line":      "/usr/bin/java -jar app.jar",
+				"process.name":              "java",
+				"process.working_directory": "/opt/kafka/broker",
+			},
+		}
+
+		aliveData := ms.buildAliveProcessData(procs, roots)
+		deadProcs := ms.checkInstanceAlive(ms.artifactInsts[0], aliveData)
+
+		// Should not detect dead process (workingDirectory contains keywords)
+		assert.Equal(t, 0, len(deadProcs), "Should not detect dead process when workingDirectory matches")
+
+		t.Logf("✓ Dead process detection with workingDirectory verified")
+	})
 }

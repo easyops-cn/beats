@@ -28,11 +28,17 @@ type ProcessCheckItem struct {
 	Ports   []string `config:"ports"`   // Process port list
 }
 
+// ProcessMatchGroup represents a group of keywords for process matching
+// All keywords within Cmdline must match (AND logic)
+type ProcessMatchGroup struct {
+	Cmdline []string `config:"cmdline"` // All keywords must match (AND logic)
+}
+
 // ArtifactInstCheck represents deployment instance check configuration
 type ArtifactInstCheck struct {
-	InstanceId         string             `config:"instanceId"`         // Instance ID
-	ProcessMatchFields []string           `config:"processMatchFields"` // Process match fields: check if any alive cmdline contains these strings
-	ProcessList        []ProcessCheckItem `config:"processList"`        // Process list (cmdline + port check)
+	InstanceId         string              `config:"instanceId"`         // Instance ID
+	ProcessMatchGroups []ProcessMatchGroup `config:"processMatchGroups"` // Process match groups: OR between groups, AND within group
+	ProcessList        []ProcessCheckItem  `config:"processList"`        // Process list (cmdline + port check)
 }
 
 // Config stores the system/process config options

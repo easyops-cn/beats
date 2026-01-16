@@ -47,7 +47,16 @@ type MetricSet struct {
 func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 	logger := logp.NewLogger("mssql.performance").With("host", base.HostData().SanitizedURI)
 
-	db, err := mssql.NewConnection(base.HostData().URI)
+	// Read module config
+	config := make(map[string]interface{})
+	if err := base.Module().UnpackConfig(config); err != nil {
+		return nil, fmt.Errorf("unpack config failed: %w", err)
+	}
+
+	// Build URI with tlsmin parameter if configured
+	uri := mssql.BuildURI(base.HostData().URI, config)
+
+	db, err := mssql.NewConnection(uri)
 	if err != nil {
 		return nil, fmt.Errorf("could not create connection to db %w", err)
 	}
