@@ -153,16 +153,16 @@ require (
 	go.uber.org/atomic v1.10.0
 	go.uber.org/multierr v1.8.0
 	go.uber.org/zap v1.23.0
-	golang.org/x/crypto v0.0.0-20220525230936-793ad666bf5e
+	golang.org/x/crypto v0.17.0
 	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616
-	golang.org/x/mod v0.5.1
-	golang.org/x/net v0.0.0-20220826154423-83b083e8dc8b
+	golang.org/x/mod v0.8.0
+	golang.org/x/net v0.10.0
 	golang.org/x/oauth2 v0.0.0-20220822191816-0ebed06d0094
-	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde
-	golang.org/x/sys v0.6.0
-	golang.org/x/text v0.3.7
+	golang.org/x/sync v0.1.0
+	golang.org/x/sys v0.15.0
+	golang.org/x/text v0.14.0
 	golang.org/x/time v0.0.0-20220609170525-579cf78fd858
-	golang.org/x/tools v0.1.9
+	golang.org/x/tools v0.6.0
 	google.golang.org/api v0.94.0
 	google.golang.org/genproto v0.0.0-20220829175752-36a9c930ecbf
 	google.golang.org/grpc v1.49.0
@@ -184,7 +184,7 @@ require (
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v0.4.1
-	github.com/Azure/go-autorest/autorest/adal v0.9.14
+	github.com/Azure/go-autorest/autorest/adal v0.9.24
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.11.17
 	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.20.4
 	github.com/aws/aws-sdk-go-v2/service/kinesis v1.15.8
@@ -252,14 +252,15 @@ require (
 	github.com/elastic/go-windows v1.0.1 // indirect
 	github.com/evanphx/json-patch v4.12.0+incompatible // indirect
 	github.com/fearful-symmetry/gomsr v0.0.1 // indirect
-	github.com/form3tech-oss/jwt-go v3.2.3+incompatible // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.2.3 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/gobuffalo/here v0.6.0 // indirect
 	github.com/godror/knownpb v0.1.0 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
 	github.com/golang-sql/civil v0.0.0-20190719163853-cb61b32ac6fe // indirect
+	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/licenseclassifier v0.0.0-20200402202327-879cb1424de0 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
@@ -321,7 +322,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	go.elastic.co/fastjson v1.1.0 // indirect
 	go.opencensus.io v0.23.0 // indirect
-	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
+	golang.org/x/term v0.15.0 // indirect
 	golang.org/x/xerrors v0.0.0-20220609144429-65e65417b02f // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
