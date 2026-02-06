@@ -381,7 +381,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			matchedInstIds, ok := matchedInstIdsVal.([]string)
 			if !ok || len(matchedInstIds) == 0 {
 				// Type error or empty, fallback to single instance handling
-				if roots[i] == (mapstr.M)(nil) {
+				if roots[i] == nil {
 					roots[i] = mapstr.M{}
 				}
 				roots[i].Put("instanceId", "")
@@ -400,7 +400,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			for _, instId := range matchedInstIds {
 				procCopy := procs[i].Clone()
 				var rootCopy mapstr.M
-				if roots[i] == (mapstr.M)(nil) {
+				if roots[i] == nil {
 					rootCopy = mapstr.M{}
 				} else {
 					rootCopy = roots[i].Clone()
@@ -420,7 +420,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			}
 		} else {
 			// Single or no instance ID, normal reporting
-			if roots[i] == (mapstr.M)(nil) {
+			if roots[i] == nil {
 				roots[i] = mapstr.M{}
 			}
 			if instanceId, exists := procs[i]["instanceId"]; exists {
@@ -464,7 +464,7 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 		if idx < len(roots) {
 			root = roots[idx]
 		}
-		if root == (mapstr.M)(nil) {
+		if root == nil {
 			continue // Skip if no root fields
 		}
 
@@ -660,7 +660,7 @@ func (m *MetricSet) addInstanceIdDimension(
 			continue
 		}
 		root := roots[i]
-		if root == (mapstr.M)(nil) {
+		if root == nil {
 			continue
 		}
 
