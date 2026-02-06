@@ -699,7 +699,7 @@ func (m *MetricSet) addInstanceIdDimension(
 }
 
 // findInstanceIdsByPort finds instance IDs by port matching
-// Returns all matching instance IDs where ALL process ports match the instance's configured port list
+// Returns all matching instance IDs where ANY configured port exists in process ports
 func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 	// Extract PID from root (process.pid)
 	pidVal, err := root.GetValue("process.pid")
@@ -735,52 +735,38 @@ func (m *MetricSet) findInstanceIdsByPort(root mapstr.M) []string {
 		return nil
 	}
 
-	// Filter out empty ports
-	filteredProcessPorts := []string{}
+	// Build process port set for O(1) lookup
 	processPortSet := make(map[string]bool)
 	for _, port := range processPorts {
 		if port != "" {
-			filteredProcessPorts = append(filteredProcessPorts, port)
 			processPortSet[port] = true
 		}
 	}
 
-	if len(filteredProcessPorts) == 0 {
+	if len(processPortSet) == 0 {
 		return nil
 	}
 
-	// Check each instance: ALL process ports must be in one of the instance's ProcessCheckItem port lists
+	// Check each instance: ANY configured port exists in process ports
 	instIdSet := make(map[string]bool)
 	for _, inst := range m.artifactInsts {
 		// Check each ProcessCheckItem in this instance
 		for _, procItem := range inst.ProcessList {
-			// Collect ports for this ProcessCheckItem
-			procItemPortSet := make(map[string]bool)
-			for _, port := range procItem.Ports {
-				if port != "" {
-					procItemPortSet[port] = true
-				}
-			}
-
 			// If this ProcessCheckItem has no ports configured, skip it
-			if len(procItemPortSet) == 0 {
+			if len(procItem.Ports) == 0 {
 				continue
 			}
 
-			// Require exact port match: the process port set must equal the configured port set
-			if len(procItemPortSet) != len(filteredProcessPorts) {
-				continue
-			}
-
-			allMatched := true
-			for _, port := range filteredProcessPorts {
-				if !procItemPortSet[port] {
-					allMatched = false
+			// Check if ANY configured port exists in process ports
+			anyPortMatched := false
+			for _, port := range procItem.Ports {
+				if port != "" && processPortSet[port] {
+					anyPortMatched = true
 					break
 				}
 			}
 
-			if allMatched {
+			if anyPortMatched {
 				// Found a matching ProcessCheckItem, add instance ID and break
 				instIdSet[inst.InstanceId] = true
 				break // Only need to match one ProcessCheckItem per instance
