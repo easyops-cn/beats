@@ -381,7 +381,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			matchedInstIds, ok := matchedInstIdsVal.([]string)
 			if !ok || len(matchedInstIds) == 0 {
 				// Type error or empty, fallback to single instance handling
-				if roots[i] == nil {
+				if roots[i] == (mapstr.M)(nil) {
 					roots[i] = mapstr.M{}
 				}
 				roots[i].Put("instanceId", "")
@@ -400,7 +400,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			for _, instId := range matchedInstIds {
 				procCopy := procs[i].Clone()
 				var rootCopy mapstr.M
-				if roots[i] == nil {
+				if roots[i] == (mapstr.M)(nil) {
 					rootCopy = mapstr.M{}
 				} else {
 					rootCopy = roots[i].Clone()
@@ -420,7 +420,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			}
 		} else {
 			// Single or no instance ID, normal reporting
-			if roots[i] == nil {
+			if roots[i] == (mapstr.M)(nil) {
 				roots[i] = mapstr.M{}
 			}
 			if instanceId, exists := procs[i]["instanceId"]; exists {
@@ -464,7 +464,7 @@ func (m *MetricSet) buildAliveProcessData(procs []mapstr.M, roots []mapstr.M) *A
 		if idx < len(roots) {
 			root = roots[idx]
 		}
-		if root == nil {
+		if root == (mapstr.M)(nil) {
 			continue // Skip if no root fields
 		}
 
@@ -656,12 +656,16 @@ func (m *MetricSet) addInstanceIdDimension(
 ) {
 	for i := range procs {
 		// Get corresponding root fields (contains process.* ECS fields)
-		if i >= len(roots) || roots[i] == nil {
+		if i >= len(roots) {
+			continue
+		}
+		root := roots[i]
+		if root == (mapstr.M)(nil) {
 			continue
 		}
 
 		// Extract cmdline from root (process.command_line)
-		cmdlineVal, err := roots[i].GetValue("process.command_line")
+		cmdlineVal, err := root.GetValue("process.command_line")
 		if err != nil {
 			continue
 		}
@@ -685,7 +689,7 @@ func (m *MetricSet) addInstanceIdDimension(
 		}
 
 		// Step 3: Try port matching (fallback 2, may return multiple instance IDs)
-		instanceIds := m.findInstanceIdsByPort(roots[i])
+		instanceIds := m.findInstanceIdsByPort(root)
 		if len(instanceIds) > 0 {
 			if len(instanceIds) == 1 {
 				// Single match, set instanceId directly
