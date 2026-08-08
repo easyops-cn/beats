@@ -27,6 +27,7 @@ import (
 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
 	k8smod "github.com/elastic/beats/v7/metricbeat/module/kubernetes"
 	"github.com/elastic/beats/v7/metricbeat/module/kubernetes/util"
+	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 )
@@ -92,6 +93,7 @@ type MetricSet struct {
 	http        *helper.HTTP
 	mod         k8smod.Module
 	clusterMeta mapstr.M
+	enricher    util.Enricher
 }
 
 // New create a new instance of the MetricSet
@@ -112,6 +114,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		http:          http,
 		mod:           mod,
 		clusterMeta:   util.AddClusterECSMeta(base),
+		enricher:      util.NewResourceMetadataEnricher(base, &kubernetes.Pod{}, mod.GetMetricsRepo(), true),
 	}
 
 	return ms, nil
@@ -121,6 +124,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 // format. It publishes the event which is then forwarded to the output. In case
 // of an error set the Error field of mb.Event or simply call report.Error().
 func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
+	m.enricher.Start()
+
 	summary, err := m.mod.GetKubeletSummary(m.http)
 	if err != nil {
 		return fmt.Errorf("error doing HTTP request to fetch 'volume' Metricset data: %w", err)
@@ -130,13 +135,12 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 	if err != nil {
 		return err
 	}
+	m.enricher.Enrich(events)
 	for _, e := range events {
 		event := mb.TransformMapStrToEvent("kubernetes", e, nil)
 		if m.clusterMeta != nil {
 			event.RootFields.DeepUpdate(m.clusterMeta)
 		}
-
-		util.EnrichWorkloadInfo(event.ModuleFields, "pod.name", event)
 
 		isOpen := reporter.Event(event)
 		if !isOpen {
@@ -144,5 +148,10 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 		}
 	}
 
+	return nil
+}
+
+func (m *MetricSet) Close() error {
+	m.enricher.Stop()
 	return nil
 }
