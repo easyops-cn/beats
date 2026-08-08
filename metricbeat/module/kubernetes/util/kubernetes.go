@@ -73,6 +73,8 @@ type enricher struct {
 	watchersStartedLock sync.Mutex
 	namespaceWatcher    kubernetes.Watcher
 	nodeWatcher         kubernetes.Watcher
+	workloadWatchers    []kubernetes.Watcher
+	workloadResolver    *workloadResolver
 	isPod               bool
 }
 
@@ -112,6 +114,12 @@ func NewResourceMetadataEnricher(
 
 	metaGen := metadata.NewNamespaceAwareResourceMetadataGenerator(cfg, watcher.Client(), namespaceMeta)
 
+	var workloadResolver *workloadResolver
+	var workloadWatchers []kubernetes.Watcher
+	if _, ok := res.(*kubernetes.Pod); ok {
+		workloadResolver, workloadWatchers = newPodWorkloadResolver(config, watcher.Client())
+	}
+
 	enricher := buildMetadataEnricher(watcher, nodeWatcher, namespaceWatcher,
 		// update
 		func(m map[string]mapstr.M, r kubernetes.Resource) {
@@ -120,7 +128,9 @@ func NewResourceMetadataEnricher(
 
 			switch r := r.(type) {
 			case *kubernetes.Pod:
-				m[id] = podMetaGen.Generate(r)
+				podMeta := podMetaGen.Generate(r)
+				enrichPodWorkload(podMeta, r, workloadResolver)
+				m[id] = podMeta
 
 			case *kubernetes.Node:
 				nodeName := r.GetObjectMeta().GetName()
@@ -169,6 +179,9 @@ func NewResourceMetadataEnricher(
 		// delete
 		func(m map[string]mapstr.M, r kubernetes.Resource) {
 			accessor, _ := meta.Accessor(r)
+			if pod, ok := r.(*kubernetes.Pod); ok && workloadResolver != nil {
+				workloadResolver.deletePod(pod.UID)
+			}
 
 			switch r := r.(type) {
 			case *kubernetes.Node:
@@ -181,9 +194,14 @@ func NewResourceMetadataEnricher(
 		},
 		// index
 		func(e mapstr.M) string {
+			if _, ok := res.(*kubernetes.Pod); ok {
+				return podMetadataIndex(e)
+			}
 			return join(getString(e, mb.ModuleDataKey+".namespace"), getString(e, "name"))
 		},
 	)
+	enricher.workloadResolver = workloadResolver
+	enricher.workloadWatchers = workloadWatchers
 
 	// Configure the enricher for Pods, so pod specific metadata ends up in the right place when
 	// calling Enrich
@@ -219,6 +237,7 @@ func NewContainerMetadataEnricher(
 	cfg, _ := conf.NewConfigFrom(&commonMetaConfig)
 
 	metaGen := metadata.GetPodMetaGen(cfg, watcher, nodeWatcher, namespaceWatcher, config.AddResourceMetadata)
+	workloadResolver, workloadWatchers := newPodWorkloadResolver(config, watcher.Client())
 
 	enricher := buildMetadataEnricher(watcher, nodeWatcher, namespaceWatcher,
 		// update
@@ -228,6 +247,7 @@ func NewContainerMetadataEnricher(
 				base.Logger().Debugf("Error while casting event: %s", ok)
 			}
 			meta := metaGen.Generate(pod)
+			enrichPodWorkload(meta, pod, workloadResolver)
 
 			statuses := make(map[string]*kubernetes.PodContainerStatus)
 			mapStatuses := func(s []kubernetes.PodContainerStatus) {
@@ -280,6 +300,9 @@ func NewContainerMetadataEnricher(
 			if !ok {
 				base.Logger().Debugf("Error while casting event: %s", ok)
 			}
+			if workloadResolver != nil {
+				workloadResolver.deletePod(pod.UID)
+			}
 			podId := NewPodId(pod.Namespace, pod.Name)
 			nodeStore := metricsRepo.GetNodeStore(pod.Spec.NodeName)
 			nodeStore.DeletePodStore(podId)
@@ -294,8 +317,28 @@ func NewContainerMetadataEnricher(
 			return join(getString(e, mb.ModuleDataKey+".namespace"), getString(e, mb.ModuleDataKey+".pod.name"), getString(e, "name"))
 		},
 	)
+	enricher.workloadResolver = workloadResolver
+	enricher.workloadWatchers = workloadWatchers
 
 	return enricher
+}
+
+func newPodWorkloadResolver(config *kubernetesConfig, client k8sclient.Interface) (*workloadResolver, []kubernetes.Watcher) {
+	options := kubernetes.WatchOptions{
+		SyncTimeout: config.SyncPeriod,
+		Namespace:   config.Namespace,
+	}
+	replicaSetWatcher, err := kubernetes.NewNamedWatcher("resource_metadata_enricher_replicaset", client, &kubernetes.ReplicaSet{}, options, nil)
+	if err != nil {
+		logp.Warn("Error creating ReplicaSet watcher for workload resolver: %s", err)
+		return nil, nil
+	}
+	jobWatcher, err := kubernetes.NewNamedWatcher("resource_metadata_enricher_job", client, &kubernetes.Job{}, options, nil)
+	if err != nil {
+		logp.Warn("Error creating Job watcher for workload resolver: %s", err)
+		return nil, nil
+	}
+	return newWorkloadResolver(replicaSetWatcher.Store(), jobWatcher.Store()), []kubernetes.Watcher{replicaSetWatcher, jobWatcher}
 }
 
 func getResourceMetadataWatchers(config *kubernetesConfig, resource kubernetes.Resource, nodeScope bool) (kubernetes.Watcher, kubernetes.Watcher, kubernetes.Watcher) {
@@ -403,6 +446,14 @@ func getString(m mapstr.M, key string) string {
 	return str
 }
 
+func podMetadataIndex(event mapstr.M) string {
+	name := getString(event, mb.ModuleDataKey+".pod.name")
+	if name == "" {
+		name = getString(event, "name")
+	}
+	return join(getString(event, mb.ModuleDataKey+".namespace"), name)
+}
+
 func join(fields ...string) string {
 	return strings.Join(fields, ":")
 }
@@ -448,6 +499,11 @@ func (m *enricher) Start() {
 	m.watchersStartedLock.Lock()
 	defer m.watchersStartedLock.Unlock()
 	if !m.watchersStarted {
+		for _, watcher := range m.workloadWatchers {
+			if err := watcher.Start(); err != nil {
+				logp.Warn("Error starting workload watcher: %s", err)
+			}
+		}
 		if m.nodeWatcher != nil {
 			if err := m.nodeWatcher.Start(); err != nil {
 				logp.Warn("Error starting node watcher: %s", err)
@@ -473,6 +529,9 @@ func (m *enricher) Stop() {
 	defer m.watchersStartedLock.Unlock()
 	if m.watchersStarted {
 		m.watcher.Stop()
+		for _, watcher := range m.workloadWatchers {
+			watcher.Stop()
+		}
 
 		if m.namespaceWatcher != nil {
 			m.namespaceWatcher.Stop()

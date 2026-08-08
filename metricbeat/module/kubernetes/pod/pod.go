@@ -137,8 +137,6 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 			}
 		}
 
-		util.EnrichWorkloadInfo(e.MetricSetFields, "name", e)
-
 		if reported := reporter.Event(e); !reported {
 			m.Logger().Debug("error trying to emit event")
 			return
