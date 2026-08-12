@@ -140,6 +140,26 @@ func TestBuildMetadataEnricher(t *testing.T) {
 	assert.Equal(t, "newuid", events[0]["uid"])
 }
 
+func TestMetadataEnricherInitializesFromSyncedStore(t *testing.T) {
+	resource := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		UID:       types.UID("initial-uid"),
+		Name:      "initial-pod",
+		Namespace: "default",
+	}}
+	store := cache.NewStore(cache.MetaNamespaceKeyFunc)
+	assert.NoError(t, store.Add(resource))
+	watcher := mockWatcher{store: store}
+	funcs := mockFuncs{}
+	enricher := buildMetadataEnricher(&watcher, nil, nil, funcs.update, funcs.delete, funcs.index)
+
+	enricher.Start()
+	events := []mapstr.M{{"name": "initial-pod"}}
+	enricher.Enrich(events)
+
+	assert.Equal(t, "initial-uid", mustValue(t, events[0], "_module.pod.uid"))
+	assert.Equal(t, resource, funcs.updated)
+}
+
 type mockFuncs struct {
 	updated kubernetes.Resource
 	deleted kubernetes.Resource
@@ -179,6 +199,7 @@ func (f *mockFuncs) index(m mapstr.M) string {
 type mockWatcher struct {
 	handler kubernetes.ResourceEventHandler
 	started bool
+	store   cache.Store
 }
 
 func (m *mockWatcher) Start() error {
@@ -195,7 +216,7 @@ func (m *mockWatcher) AddEventHandler(r kubernetes.ResourceEventHandler) {
 }
 
 func (m *mockWatcher) Store() cache.Store {
-	return nil
+	return m.store
 }
 
 func (m *mockWatcher) Client() k8s.Interface {

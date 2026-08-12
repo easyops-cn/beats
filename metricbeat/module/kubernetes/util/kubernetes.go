@@ -69,6 +69,7 @@ type enricher struct {
 	metadata            map[string]mapstr.M
 	metadataTombstones  map[string]metadataTombstone
 	deletionGracePeriod time.Duration
+	updateMetadata      func(map[string]mapstr.M, kubernetes.Resource) []string
 	index               func(mapstr.M) string
 	watcher             kubernetes.Watcher
 	watchersStarted     bool
@@ -496,6 +497,7 @@ func buildMetadataEnricher(
 	enricher := enricher{
 		metadata:           map[string]mapstr.M{},
 		metadataTombstones: map[string]metadataTombstone{},
+		updateMetadata:     update,
 		index:              index,
 		watcher:            watcher,
 		nodeWatcher:        nodeWatcher,
@@ -570,9 +572,31 @@ func (m *enricher) Start() {
 		err := m.watcher.Start()
 		if err != nil {
 			logp.Warn("Error starting Kubernetes watcher: %s", err)
+		} else {
+			m.initializeMetadataFromStore()
 		}
 		m.watchersStarted = true
 	}
+}
+
+func (m *enricher) initializeMetadataFromStore() {
+	store := m.watcher.Store()
+	if store == nil || m.updateMetadata == nil {
+		return
+	}
+
+	m.Lock()
+	defer m.Unlock()
+	for _, object := range store.List() {
+		resource, ok := object.(kubernetes.Resource)
+		if !ok {
+			continue
+		}
+		for _, key := range m.updateMetadata(m.metadata, resource) {
+			delete(m.metadataTombstones, key)
+		}
+	}
+	m.cleanupMetadataTombstones(time.Now())
 }
 
 func (m *enricher) Stop() {
