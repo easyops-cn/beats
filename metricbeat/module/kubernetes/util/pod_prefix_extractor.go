@@ -9,26 +9,29 @@ import (
 	"github.com/elastic/elastic-agent-libs/mapstr"
 )
 
+var (
+	deploymentPodPattern = regexp.MustCompile(`^(.*)-[a-z0-9]{8,10}-[a-z0-9]{5}$`)
+	statefulPodPattern   = regexp.MustCompile(`^(.*)-\d+$`)
+	simplePodPattern     = regexp.MustCompile(`^(.*)-[a-z0-9]{5,}$`)
+)
+
 // ExtractWorkloadName 根据 Pod 名称提取出非随机的前缀部分，即工作负载名称
 func ExtractWorkloadName(podName string) string {
 	// 匹配 Deployment/ReplicaSet 生成的 Pod 名称
 	// 格式：<工作负载名称>-<副本集哈希>-<Pod 随机后缀>
-	deployPattern := regexp.MustCompile(`^(.*)-[a-z0-9]{8,10}-[a-z0-9]{5}$`)
-	if m := deployPattern.FindStringSubmatch(podName); m != nil {
+	if m := deploymentPodPattern.FindStringSubmatch(podName); m != nil {
 		return m[1]
 	}
 
 	// 匹配 StatefulSet 生成的 Pod 名称
 	// 格式：<工作负载名称>-<序号>
-	statefulPattern := regexp.MustCompile(`^(.*)-\d+$`)
-	if m := statefulPattern.FindStringSubmatch(podName); m != nil {
+	if m := statefulPodPattern.FindStringSubmatch(podName); m != nil {
 		return m[1]
 	}
 
 	// 匹配 Job 或 DaemonSet 生成的 Pod 名称（只追加了一个随机后缀）
 	// 格式：<工作负载名称>-<随机后缀>
-	simplePattern := regexp.MustCompile(`^(.*)-[a-z0-9]{5,}$`)
-	if m := simplePattern.FindStringSubmatch(podName); m != nil {
+	if m := simplePodPattern.FindStringSubmatch(podName); m != nil {
 		return m[1]
 	}
 
@@ -75,15 +78,15 @@ func ExtractWorkloadNameWithEvent(podName string, event mb.Event) string {
 		// 如果找到了工作负载类型但没有名称，使用正则表达式提取
 		switch kind {
 		case "deployment", "replicaset":
-			if m := regexp.MustCompile(`^(.*)-[a-z0-9]{8,10}-[a-z0-9]{5}$`).FindStringSubmatch(podName); m != nil {
+			if m := deploymentPodPattern.FindStringSubmatch(podName); m != nil {
 				return m[1]
 			}
 		case "statefulset":
-			if m := regexp.MustCompile(`^(.*)-\d+$`).FindStringSubmatch(podName); m != nil {
+			if m := statefulPodPattern.FindStringSubmatch(podName); m != nil {
 				return m[1]
 			}
 		case "daemonset", "job", "cronjob":
-			if m := regexp.MustCompile(`^(.*)-[a-z0-9]{5,}$`).FindStringSubmatch(podName); m != nil {
+			if m := simplePodPattern.FindStringSubmatch(podName); m != nil {
 				return m[1]
 			}
 		}

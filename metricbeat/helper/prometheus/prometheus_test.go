@@ -25,12 +25,29 @@ import (
 	"sort"
 	"testing"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 
 	mbtest "github.com/elastic/beats/v7/metricbeat/mb/testing"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 )
+
+func TestProcessMetricsSkipsUnmappedFamilies(t *testing.T) {
+	name := "unmapped_metric"
+	metrics := make([]*dto.Metric, 1000)
+	for index := range metrics {
+		value := float64(index)
+		metrics[index] = &dto.Metric{Gauge: &dto.Gauge{Value: &value}}
+	}
+
+	processor := &prometheus{}
+	events, err := processor.ProcessMetrics([]*dto.MetricFamily{{Name: &name, Metric: metrics}}, &MetricsMapping{
+		Metrics: map[string]MetricMap{},
+	})
+	assert.NoError(t, err)
+	assert.Empty(t, events)
+}
 
 const (
 	promMetrics = `
