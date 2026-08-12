@@ -18,8 +18,11 @@ jobs:
     - uses: actions/setup-go@v3
       with:
         go-version-file: .go-version
-    - name: Run check/update
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    - name: Run x-pack workload dependency checks
       run: |
-        go install github.com/magefile/mage
-        make -C ${{ env.BEAT_MODULE }} check update
-        make check-no-changes
+        go mod verify
+        go install github.com/magefile/mage@v1.13.0
+        GOFLAGS=-mod=readonly mage -d ${{ env.BEAT_MODULE }} -l
