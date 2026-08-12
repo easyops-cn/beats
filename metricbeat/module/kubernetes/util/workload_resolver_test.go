@@ -3,13 +3,14 @@ package util
 import (
 	"testing"
 
-	"github.com/elastic/beats/v7/metricbeat/mb"
-	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
-	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/elastic/beats/v7/metricbeat/mb"
+	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
+	"github.com/elastic/elastic-agent-libs/mapstr"
 )
 
 func TestWorkloadResolver(t *testing.T) {
