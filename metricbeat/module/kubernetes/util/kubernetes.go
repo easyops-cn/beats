@@ -67,6 +67,8 @@ type kubernetesConfig struct {
 type enricher struct {
 	sync.RWMutex
 	metadata            map[string]mapstr.M
+	metadataTombstones  map[string]metadataTombstone
+	deletionGracePeriod time.Duration
 	index               func(mapstr.M) string
 	watcher             kubernetes.Watcher
 	watchersStarted     bool
@@ -78,7 +80,15 @@ type enricher struct {
 	isPod               bool
 }
 
-const selector = "kubernetes"
+type metadataTombstone struct {
+	meta      mapstr.M
+	expiresAt time.Time
+}
+
+const (
+	selector                    = "kubernetes"
+	metadataDeletionGracePeriod = time.Minute
+)
 
 // NewResourceMetadataEnricher returns an Enricher configured for kubernetes resource events
 func NewResourceMetadataEnricher(
@@ -122,7 +132,7 @@ func NewResourceMetadataEnricher(
 
 	enricher := buildMetadataEnricher(watcher, nodeWatcher, namespaceWatcher,
 		// update
-		func(m map[string]mapstr.M, r kubernetes.Resource) {
+		func(m map[string]mapstr.M, r kubernetes.Resource) []string {
 			accessor, _ := meta.Accessor(r)
 			id := join(accessor.GetNamespace(), accessor.GetName())
 
@@ -175,9 +185,10 @@ func NewResourceMetadataEnricher(
 			default:
 				m[id] = metaGen.Generate(r.GetObjectKind().GroupVersionKind().Kind, r)
 			}
+			return []string{id}
 		},
 		// delete
-		func(m map[string]mapstr.M, r kubernetes.Resource) {
+		func(m map[string]mapstr.M, r kubernetes.Resource) []string {
 			accessor, _ := meta.Accessor(r)
 			if pod, ok := r.(*kubernetes.Pod); ok && workloadResolver != nil {
 				workloadResolver.deletePod(pod.UID)
@@ -190,7 +201,7 @@ func NewResourceMetadataEnricher(
 			}
 
 			id := join(accessor.GetNamespace(), accessor.GetName())
-			delete(m, id)
+			return []string{id}
 		},
 		// index
 		func(e mapstr.M) string {
@@ -207,6 +218,7 @@ func NewResourceMetadataEnricher(
 	// calling Enrich
 	if _, ok := res.(*kubernetes.Pod); ok {
 		enricher.isPod = true
+		enricher.deletionGracePeriod = metadataDeletionGracePeriod
 	}
 
 	return enricher
@@ -241,13 +253,15 @@ func NewContainerMetadataEnricher(
 
 	enricher := buildMetadataEnricher(watcher, nodeWatcher, namespaceWatcher,
 		// update
-		func(m map[string]mapstr.M, r kubernetes.Resource) {
+		func(m map[string]mapstr.M, r kubernetes.Resource) []string {
 			pod, ok := r.(*kubernetes.Pod)
 			if !ok {
 				base.Logger().Debugf("Error while casting event: %s", ok)
 			}
-			meta := metaGen.Generate(pod)
-			enrichPodWorkload(meta, pod, workloadResolver)
+			podMeta := metaGen.Generate(pod)
+			enrichPodWorkload(podMeta, pod, workloadResolver)
+			keys := []string{containerMetadataIndex(pod.Namespace, pod.Name, "")}
+			m[keys[0]] = podMeta.Clone()
 
 			statuses := make(map[string]*kubernetes.PodContainerStatus)
 			mapStatuses := func(s []kubernetes.PodContainerStatus) {
@@ -263,6 +277,7 @@ func NewContainerMetadataEnricher(
 			podStore, _ := nodeStore.AddPodStore(podId)
 
 			for _, container := range append(pod.Spec.Containers, pod.Spec.InitContainers...) {
+				meta := podMeta.Clone()
 				metrics := NewContainerMetrics()
 
 				if cpu, ok := container.Resources.Limits["cpu"]; ok {
@@ -290,12 +305,14 @@ func NewContainerMetadataEnricher(
 					}
 				}
 
-				id := join(pod.GetObjectMeta().GetNamespace(), pod.GetObjectMeta().GetName(), container.Name)
+				id := containerMetadataIndex(pod.Namespace, pod.Name, container.Name)
 				m[id] = meta
+				keys = append(keys, id)
 			}
+			return keys
 		},
 		// delete
-		func(m map[string]mapstr.M, r kubernetes.Resource) {
+		func(m map[string]mapstr.M, r kubernetes.Resource) []string {
 			pod, ok := r.(*kubernetes.Pod)
 			if !ok {
 				base.Logger().Debugf("Error while casting event: %s", ok)
@@ -307,18 +324,24 @@ func NewContainerMetadataEnricher(
 			nodeStore := metricsRepo.GetNodeStore(pod.Spec.NodeName)
 			nodeStore.DeletePodStore(podId)
 
+			keys := []string{containerMetadataIndex(pod.Namespace, pod.Name, "")}
 			for _, container := range append(pod.Spec.Containers, pod.Spec.InitContainers...) {
-				id := join(pod.ObjectMeta.GetNamespace(), pod.GetObjectMeta().GetName(), container.Name)
-				delete(m, id)
+				keys = append(keys, containerMetadataIndex(pod.Namespace, pod.Name, container.Name))
 			}
+			return keys
 		},
 		// index
 		func(e mapstr.M) string {
-			return join(getString(e, mb.ModuleDataKey+".namespace"), getString(e, mb.ModuleDataKey+".pod.name"), getString(e, "name"))
+			return containerMetadataIndex(
+				getString(e, mb.ModuleDataKey+".namespace"),
+				getString(e, mb.ModuleDataKey+".pod.name"),
+				getString(e, "name"),
+			)
 		},
 	)
 	enricher.workloadResolver = workloadResolver
 	enricher.workloadWatchers = workloadWatchers
+	enricher.deletionGracePeriod = metadataDeletionGracePeriod
 
 	return enricher
 }
@@ -454,6 +477,10 @@ func podMetadataIndex(event mapstr.M) string {
 	return join(getString(event, mb.ModuleDataKey+".namespace"), name)
 }
 
+func containerMetadataIndex(namespace, pod, container string) string {
+	return join(namespace, pod, container)
+}
+
 func join(fields ...string) string {
 	return strings.Join(fields, ":")
 }
@@ -462,37 +489,61 @@ func buildMetadataEnricher(
 	watcher kubernetes.Watcher,
 	nodeWatcher kubernetes.Watcher,
 	namespaceWatcher kubernetes.Watcher,
-	update func(map[string]mapstr.M, kubernetes.Resource),
-	delete func(map[string]mapstr.M, kubernetes.Resource),
+	update func(map[string]mapstr.M, kubernetes.Resource) []string,
+	remove func(map[string]mapstr.M, kubernetes.Resource) []string,
 	index func(e mapstr.M) string) *enricher {
 
 	enricher := enricher{
-		metadata:         map[string]mapstr.M{},
-		index:            index,
-		watcher:          watcher,
-		nodeWatcher:      nodeWatcher,
-		namespaceWatcher: namespaceWatcher,
+		metadata:           map[string]mapstr.M{},
+		metadataTombstones: map[string]metadataTombstone{},
+		index:              index,
+		watcher:            watcher,
+		nodeWatcher:        nodeWatcher,
+		namespaceWatcher:   namespaceWatcher,
 	}
 
 	watcher.AddEventHandler(kubernetes.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			enricher.Lock()
 			defer enricher.Unlock()
-			update(enricher.metadata, obj.(kubernetes.Resource))
+			for _, key := range update(enricher.metadata, obj.(kubernetes.Resource)) {
+				delete(enricher.metadataTombstones, key)
+			}
+			enricher.cleanupMetadataTombstones(time.Now())
 		},
 		UpdateFunc: func(obj interface{}) {
 			enricher.Lock()
 			defer enricher.Unlock()
-			update(enricher.metadata, obj.(kubernetes.Resource))
+			for _, key := range update(enricher.metadata, obj.(kubernetes.Resource)) {
+				delete(enricher.metadataTombstones, key)
+			}
+			enricher.cleanupMetadataTombstones(time.Now())
 		},
 		DeleteFunc: func(obj interface{}) {
 			enricher.Lock()
 			defer enricher.Unlock()
-			delete(enricher.metadata, obj.(kubernetes.Resource))
+			now := time.Now()
+			for _, key := range remove(enricher.metadata, obj.(kubernetes.Resource)) {
+				if meta := enricher.metadata[key]; meta != nil {
+					if enricher.deletionGracePeriod > 0 {
+						enricher.metadataTombstones[key] = metadataTombstone{meta: meta, expiresAt: now.Add(enricher.deletionGracePeriod)}
+					}
+					delete(enricher.metadata, key)
+				}
+			}
+			enricher.cleanupMetadataTombstones(now)
 		},
 	})
 
 	return &enricher
+}
+
+func (m *enricher) cleanupMetadataTombstones(now time.Time) {
+	for key, tombstone := range m.metadataTombstones {
+		if !now.Before(tombstone.expiresAt) {
+			delete(m.metadataTombstones, key)
+		}
+	}
 }
 
 func (m *enricher) Start() {
@@ -546,10 +597,18 @@ func (m *enricher) Stop() {
 }
 
 func (m *enricher) Enrich(events []mapstr.M) {
-	m.RLock()
-	defer m.RUnlock()
+	m.Lock()
+	defer m.Unlock()
+	m.cleanupMetadataTombstones(time.Now())
 	for _, event := range events {
-		if meta := m.metadata[m.index(event)]; meta != nil {
+		key := m.index(event)
+		meta := m.metadata[key]
+		if meta == nil {
+			if tombstone, ok := m.metadataTombstones[key]; ok && time.Now().Before(tombstone.expiresAt) {
+				meta = tombstone.meta
+			}
+		}
+		if meta != nil {
 			k8s, err := meta.GetValue("kubernetes")
 			if err != nil {
 				continue

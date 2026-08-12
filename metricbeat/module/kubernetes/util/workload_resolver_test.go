@@ -143,6 +143,48 @@ func TestPodMetadataIndex(t *testing.T) {
 	}
 }
 
+func TestContainerMetadataIndex(t *testing.T) {
+	require.Equal(t, "default:auth-server-pod:auth-server", containerMetadataIndex("default", "auth-server-pod", "auth-server"))
+	require.Equal(t, "default:auth-server-pod:", containerMetadataIndex("default", "auth-server-pod", ""))
+}
+
+func TestContainerEnricherUsesPodMetadataForAggregateEvents(t *testing.T) {
+	podMeta := mapstr.M{"kubernetes": mapstr.M{
+		"pod":      mapstr.M{"name": "auth-server-pod"},
+		"workload": mapstr.M{"kind": "deployment", "name": "auth-server"},
+	}}
+	containerMeta := podMeta.Clone()
+	_, err := containerMeta.Put("kubernetes.container.id", "container-id")
+	require.NoError(t, err)
+
+	enricher := enricher{
+		metadata: map[string]mapstr.M{
+			containerMetadataIndex("default", "auth-server-pod", ""):            podMeta,
+			containerMetadataIndex("default", "auth-server-pod", "auth-server"): containerMeta,
+		},
+		index: func(event mapstr.M) string {
+			return containerMetadataIndex(
+				getString(event, mb.ModuleDataKey+".namespace"),
+				getString(event, mb.ModuleDataKey+".pod.name"),
+				getString(event, "name"),
+			)
+		},
+	}
+	events := []mapstr.M{
+		{mb.ModuleDataKey: mapstr.M{"namespace": "default", "pod": mapstr.M{"name": "auth-server-pod"}}, "name": "auth-server"},
+		{mb.ModuleDataKey: mapstr.M{"namespace": "default", "pod": mapstr.M{"name": "auth-server-pod"}}},
+	}
+
+	enricher.Enrich(events)
+
+	for _, event := range events {
+		require.Equal(t, "auth-server", mustValue(t, event, mb.ModuleDataKey+".workload.name"))
+	}
+	require.Equal(t, "container-id", mustValue(t, events[0], mb.ModuleDataKey+".container.id"))
+	_, err = events[1].GetValue(mb.ModuleDataKey + ".container.id")
+	require.Error(t, err)
+}
+
 func TestWorkloadResolverKeepsConfirmedPodIdentityStable(t *testing.T) {
 	controller := true
 	replicaSetStore := cache.NewStore(cache.MetaNamespaceKeyFunc)

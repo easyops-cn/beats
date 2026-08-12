@@ -20,6 +20,7 @@ package util
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -102,6 +103,7 @@ func TestBuildMetadataEnricher(t *testing.T) {
 	}, events)
 
 	// Emit delete event
+	enricher.deletionGracePeriod = metadataDeletionGracePeriod
 	watcher.handler.OnDelete(resource)
 	assert.Equal(t, resource, funcs.deleted)
 
@@ -113,8 +115,29 @@ func TestBuildMetadataEnricher(t *testing.T) {
 
 	assert.Equal(t, []mapstr.M{
 		{"name": "unknown"},
-		{"name": "enrich"},
+		{
+			"name":    "enrich",
+			"uid":     "mockuid",
+			"_module": mapstr.M{"label": "value"},
+			"meta":    mapstr.M{"orchestrator": mapstr.M{"cluster": mapstr.M{"name": "gke-4242"}}},
+		},
 	}, events)
+
+	enricher.Lock()
+	tombstone := enricher.metadataTombstones[resource.Name]
+	tombstone.expiresAt = time.Now().Add(-time.Second)
+	enricher.metadataTombstones[resource.Name] = tombstone
+	enricher.Unlock()
+	events = []mapstr.M{{"name": "enrich"}}
+	enricher.Enrich(events)
+	assert.Equal(t, []mapstr.M{{"name": "enrich"}}, events)
+
+	resource.UID = types.UID("newuid")
+	watcher.handler.OnAdd(resource)
+	assert.NotContains(t, enricher.metadataTombstones, resource.Name)
+	events = []mapstr.M{{"name": "enrich"}}
+	enricher.Enrich(events)
+	assert.Equal(t, "newuid", events[0]["uid"])
 }
 
 type mockFuncs struct {
@@ -123,7 +146,7 @@ type mockFuncs struct {
 	indexed mapstr.M
 }
 
-func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) {
+func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) []string {
 	accessor, _ := meta.Accessor(obj)
 	f.updated = obj
 	meta := mapstr.M{
@@ -139,12 +162,13 @@ func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) {
 	}
 	kubernetes2.ShouldPut(meta, "orchestrator.cluster.name", "gke-4242", logger)
 	m[accessor.GetName()] = meta
+	return []string{accessor.GetName()}
 }
 
-func (f *mockFuncs) delete(m map[string]mapstr.M, obj kubernetes.Resource) {
+func (f *mockFuncs) delete(m map[string]mapstr.M, obj kubernetes.Resource) []string {
 	accessor, _ := meta.Accessor(obj)
 	f.deleted = obj
-	delete(m, accessor.GetName())
+	return []string{accessor.GetName()}
 }
 
 func (f *mockFuncs) index(m mapstr.M) string {
