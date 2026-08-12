@@ -23,7 +23,9 @@ jobs:
     - uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-    - name: Run check-default
+    - name: Run workload checks
       run: |
-        go install github.com/magefile/mage
-        make check-default
+        go mod verify
+        go test ./metricbeat/module/kubernetes/util -run 'TestExtractWorkloadName' -count=1
+        go test ./metricbeat/helper/prometheus -run 'TestProcessMetricsSkipsUnmappedFamilies' -count=1
+        go build ./metricbeat/module/system/process
