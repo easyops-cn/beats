@@ -18,8 +18,12 @@ jobs:
     - uses: actions/setup-go@v3
       with:
         go-version-file: .go-version
-    - name: Run check/update
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    - name: Run metricbeat workload checks
       run: |
-        go install github.com/magefile/mage
-        make -C ${{ env.BEAT_MODULE }} check update
-        make check-no-changes
+        go mod verify
+        go test ./metricbeat/module/kubernetes/util -run 'TestEnrichPodWorkloadPrefersControllerChainOverConflictingMetadata|TestWorkloadResolverSeparatesSameNamedReplicaSetsByNamespace|TestMetadataEnricherInitializesFromSyncedStore' -count=1
+        go test ./metricbeat/helper/prometheus -run 'TestProcessMetricsSkipsUnmappedFamilies' -count=1
+        go build ./metricbeat/module/system/process

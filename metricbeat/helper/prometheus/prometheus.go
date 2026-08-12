@@ -138,16 +138,14 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 
 	// 遍历所有指标族（metric family）
 	for _, family := range families {
+		// 未映射的指标族无需遍历其全部样本。
+		m, ok := mapping.Metrics[family.GetName()]
+		if m == nil || !ok {
+			continue
+		}
+
 		// 遍历该指标族下的所有具体指标
 		for _, metric := range family.GetMetric() {
-			// 从映射配置中获取该指标的处理规则
-			// 例如：http_requests_total 可能被映射为 "http.requests.total"
-			m, ok := mapping.Metrics[family.GetName()]
-			if m == nil || !ok {
-				// 如果找不到映射规则，跳过该指标
-				continue
-			}
-
 			// 获取指标字段名，例如 "http.requests.total"
 			field := m.GetField()
 			// 获取指标值，例如 100
