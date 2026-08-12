@@ -113,6 +113,63 @@ func TestEnrichPodWorkload(t *testing.T) {
 	require.Equal(t, "pod_owner", mustValue(t, meta, "kubernetes.workload.source"))
 }
 
+func TestEnrichPodWorkloadPrefersControllerChainOverConflictingMetadata(t *testing.T) {
+	controller := true
+	replicaSetStore := cache.NewStore(cache.MetaNamespaceKeyFunc)
+	replicaSet := &kubernetes.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "default", Name: "auth-server-6b4b46d67b", UID: "rs-uid",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "auth-server", UID: "deployment-uid", Controller: &controller}},
+	}}
+	require.NoError(t, replicaSetStore.Add(replicaSet))
+	resolver := newWorkloadResolver(replicaSetStore, cache.NewStore(cache.MetaNamespaceKeyFunc))
+	meta := mapstr.M{"kubernetes": mapstr.M{
+		"deployment": mapstr.M{"name": "auth-server"},
+		"replicaset": mapstr.M{"name": "auth-server-6b4b46d67b"},
+		"workload":   mapstr.M{"kind": "replicaset", "name": "auth-server-6b4b46d67b"},
+	}}
+	pod := podWithOwner("pod-uid", "ReplicaSet", replicaSet.Name, string(replicaSet.UID), &controller)
+
+	enrichPodWorkload(meta, pod, resolver)
+
+	require.Equal(t, "auth-server", mustValue(t, meta, "kubernetes.deployment.name"))
+	require.Equal(t, "auth-server-6b4b46d67b", mustValue(t, meta, "kubernetes.replicaset.name"))
+	require.Equal(t, "deployment", mustValue(t, meta, "kubernetes.workload.kind"))
+	require.Equal(t, "auth-server", mustValue(t, meta, "kubernetes.workload.name"))
+	require.Equal(t, "deployment-uid", mustValue(t, meta, "kubernetes.workload.uid"))
+	require.Equal(t, "pod_owner_replicaset_cache", mustValue(t, meta, "kubernetes.workload.source"))
+}
+
+func TestWorkloadResolverSeparatesSameNamedReplicaSetsByNamespace(t *testing.T) {
+	controller := true
+	replicaSetStore := cache.NewStore(cache.MetaNamespaceKeyFunc)
+	for _, replicaSet := range []*kubernetes.ReplicaSet{
+		{ObjectMeta: metav1.ObjectMeta{
+			Namespace: "team-a", Name: "auth-server-6b4b46d67b", UID: "rs-a-uid",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "auth-server", UID: "deployment-a-uid", Controller: &controller}},
+		}},
+		{ObjectMeta: metav1.ObjectMeta{
+			Namespace: "team-b", Name: "auth-server-6b4b46d67b", UID: "rs-b-uid",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "auth-server", UID: "deployment-b-uid", Controller: &controller}},
+		}},
+	} {
+		require.NoError(t, replicaSetStore.Add(replicaSet))
+	}
+	resolver := newWorkloadResolver(replicaSetStore, cache.NewStore(cache.MetaNamespaceKeyFunc))
+
+	podA := podWithOwner("pod-a-uid", "ReplicaSet", "auth-server-6b4b46d67b", "rs-a-uid", &controller)
+	podA.Namespace = "team-a"
+	podB := podWithOwner("pod-b-uid", "ReplicaSet", "auth-server-6b4b46d67b", "rs-b-uid", &controller)
+	podB.Namespace = "team-b"
+
+	identityA, resolvedA := resolver.resolve(podA)
+	identityB, resolvedB := resolver.resolve(podB)
+
+	require.True(t, resolvedA)
+	require.True(t, resolvedB)
+	require.Equal(t, workloadIdentity{Kind: "deployment", Name: "auth-server", UID: "deployment-a-uid", Source: "pod_owner_replicaset_cache"}, identityA)
+	require.Equal(t, workloadIdentity{Kind: "deployment", Name: "auth-server", UID: "deployment-b-uid", Source: "pod_owner_replicaset_cache"}, identityB)
+}
+
 func TestPodMetadataIndex(t *testing.T) {
 	tests := []struct {
 		name  string
