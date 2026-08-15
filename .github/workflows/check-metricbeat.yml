@@ -24,6 +24,6 @@ jobs:
     - name: Run metricbeat workload checks
       run: |
         go mod verify
-        go test ./metricbeat/module/kubernetes/util -run 'TestExtractWorkloadName' -count=1
+        go test ./metricbeat/module/kubernetes/util -run 'TestEnrichPodWorkloadPrefersControllerChainOverConflictingMetadata|TestWorkloadResolverSeparatesSameNamedReplicaSetsByNamespace|TestMetadataEnricherInitializesFromSyncedStore' -count=1
         go test ./metricbeat/helper/prometheus -run 'TestProcessMetricsSkipsUnmappedFamilies' -count=1
         go build ./metricbeat/module/system/process

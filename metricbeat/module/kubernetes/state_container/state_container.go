@@ -227,8 +227,6 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 			}
 		}
 
-		util.EnrichWorkloadInfo(e.ModuleFields, "pod.name", e)
-
 		if reported := reporter.Event(e); !reported {
 			return nil
 		}

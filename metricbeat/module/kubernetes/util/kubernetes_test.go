@@ -20,6 +20,7 @@ package util
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -102,6 +103,7 @@ func TestBuildMetadataEnricher(t *testing.T) {
 	}, events)
 
 	// Emit delete event
+	enricher.deletionGracePeriod = metadataDeletionGracePeriod
 	watcher.handler.OnDelete(resource)
 	assert.Equal(t, resource, funcs.deleted)
 
@@ -113,8 +115,49 @@ func TestBuildMetadataEnricher(t *testing.T) {
 
 	assert.Equal(t, []mapstr.M{
 		{"name": "unknown"},
-		{"name": "enrich"},
+		{
+			"name":    "enrich",
+			"uid":     "mockuid",
+			"_module": mapstr.M{"label": "value"},
+			"meta":    mapstr.M{"orchestrator": mapstr.M{"cluster": mapstr.M{"name": "gke-4242"}}},
+		},
 	}, events)
+
+	enricher.Lock()
+	tombstone := enricher.metadataTombstones[resource.Name]
+	tombstone.expiresAt = time.Now().Add(-time.Second)
+	enricher.metadataTombstones[resource.Name] = tombstone
+	enricher.Unlock()
+	events = []mapstr.M{{"name": "enrich"}}
+	enricher.Enrich(events)
+	assert.Equal(t, []mapstr.M{{"name": "enrich"}}, events)
+
+	resource.UID = types.UID("newuid")
+	watcher.handler.OnAdd(resource)
+	assert.NotContains(t, enricher.metadataTombstones, resource.Name)
+	events = []mapstr.M{{"name": "enrich"}}
+	enricher.Enrich(events)
+	assert.Equal(t, "newuid", events[0]["uid"])
+}
+
+func TestMetadataEnricherInitializesFromSyncedStore(t *testing.T) {
+	resource := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		UID:       types.UID("initial-uid"),
+		Name:      "initial-pod",
+		Namespace: "default",
+	}}
+	store := cache.NewStore(cache.MetaNamespaceKeyFunc)
+	assert.NoError(t, store.Add(resource))
+	watcher := mockWatcher{store: store}
+	funcs := mockFuncs{}
+	enricher := buildMetadataEnricher(&watcher, nil, nil, funcs.update, funcs.delete, funcs.index)
+
+	enricher.Start()
+	events := []mapstr.M{{"name": "initial-pod"}}
+	enricher.Enrich(events)
+
+	assert.Equal(t, "initial-uid", mustValue(t, events[0], "_module.pod.uid"))
+	assert.Equal(t, resource, funcs.updated)
 }
 
 type mockFuncs struct {
@@ -123,7 +166,7 @@ type mockFuncs struct {
 	indexed mapstr.M
 }
 
-func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) {
+func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) []string {
 	accessor, _ := meta.Accessor(obj)
 	f.updated = obj
 	meta := mapstr.M{
@@ -139,12 +182,13 @@ func (f *mockFuncs) update(m map[string]mapstr.M, obj kubernetes.Resource) {
 	}
 	kubernetes2.ShouldPut(meta, "orchestrator.cluster.name", "gke-4242", logger)
 	m[accessor.GetName()] = meta
+	return []string{accessor.GetName()}
 }
 
-func (f *mockFuncs) delete(m map[string]mapstr.M, obj kubernetes.Resource) {
+func (f *mockFuncs) delete(m map[string]mapstr.M, obj kubernetes.Resource) []string {
 	accessor, _ := meta.Accessor(obj)
 	f.deleted = obj
-	delete(m, accessor.GetName())
+	return []string{accessor.GetName()}
 }
 
 func (f *mockFuncs) index(m mapstr.M) string {
@@ -155,6 +199,7 @@ func (f *mockFuncs) index(m mapstr.M) string {
 type mockWatcher struct {
 	handler kubernetes.ResourceEventHandler
 	started bool
+	store   cache.Store
 }
 
 func (m *mockWatcher) Start() error {
@@ -171,7 +216,7 @@ func (m *mockWatcher) AddEventHandler(r kubernetes.ResourceEventHandler) {
 }
 
 func (m *mockWatcher) Store() cache.Store {
-	return nil
+	return m.store
 }
 
 func (m *mockWatcher) Client() k8s.Interface {
