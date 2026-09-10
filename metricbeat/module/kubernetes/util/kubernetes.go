@@ -20,6 +20,7 @@ package util
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -456,8 +457,21 @@ func GetConfig(base mb.BaseMetricSet) (*kubernetesConfig, error) {
 	if err := base.Module().UnpackConfig(&config); err != nil {
 		return nil, errors.New("error unpacking configs")
 	}
+	if config.Node == "" {
+		config.Node = nodeFromMetricsetHost(base.HostData().Host)
+	}
 
 	return config, nil
+}
+
+func nodeFromMetricsetHost(host string) string {
+	if host == "" {
+		return ""
+	}
+	if node, _, err := net.SplitHostPort(host); err == nil {
+		return node
+	}
+	return strings.Trim(host, "[]")
 }
 
 func getString(m mapstr.M, key string) string {
