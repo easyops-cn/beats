@@ -128,6 +128,7 @@ var (
 // init registers the MetricSet with the central registry.
 // The New method will be called after the setup of the module and before starting to fetch data
 func init() {
+	k8smod.RegisterStateMetricsMapping("state_container", mapping)
 	mb.Registry.MustAddMetricSet("kubernetes", "state_container", New,
 		mb.WithHostParser(hostParser),
 	)
@@ -170,18 +171,12 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 	m.enricher.Start()
 
-	families, err := m.mod.GetStateMetricsFamilies(m.prometheus)
+	events, err := k8smod.GetStateMetricsSource(m.mod, m.prometheus, mapping)
 	if err != nil {
 		return fmt.Errorf("error getting families: %w", err)
 	}
-	events, err := m.prometheus.ProcessMetrics(families, mapping)
-	if err != nil {
-		return fmt.Errorf("error getting event: %w", err)
-	}
 
-	m.enricher.Enrich(events)
-
-	for _, event := range events {
+	util.EnrichAndConsumeSource(events, m.enricher, func(event mapstr.M) bool {
 		// applying ECS to kubernetes.container.id in the form <container.runtime>://<container.id>
 		// copy to ECS fields the kubernetes.container.image, kubernetes.container.name
 		containerFields := mapstr.M{}
@@ -228,9 +223,10 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 		}
 
 		if reported := reporter.Event(e); !reported {
-			return nil
+			return false
 		}
-	}
+		return true
+	}, reporter)
 
 	return nil
 }

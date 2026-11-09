@@ -20,6 +20,7 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,46 +43,92 @@ func init() {
 type Module interface {
 	mb.Module
 	GetStateMetricsFamilies(prometheus p.Prometheus) ([]*dto.MetricFamily, error)
+	GetStateMetricsFamiliesFor(prometheus p.Prometheus, mapping *p.MetricsMapping) ([]*dto.MetricFamily, error)
 	GetKubeletStats(http *helper.HTTP) ([]byte, error)
 	GetKubeletSummary(http *helper.HTTP) (*Summary, error)
 	GetMetricsRepo() *util.MetricsRepo
 }
 
 type familiesCache struct {
-	sharedFamilies     []*dto.MetricFamily
-	lastFetchErr       error
-	lastFetchTimestamp time.Time
+	lock                sync.Mutex
+	sharedFamilies      []*dto.MetricFamily
+	byName              map[string]*dto.MetricFamily
+	lastFetchErr        error
+	lastFetchTimestamp  time.Time
+	lastAccessTimestamp time.Time
 }
 
 type kubeStateMetricsCache struct {
 	cacheMap map[uint64]*familiesCache
 	lock     sync.Mutex
+	pinned   bool
 }
 
 func (c *kubeStateMetricsCache) getCacheMapEntry(hash uint64) *familiesCache {
+	now := time.Now()
 	if _, ok := c.cacheMap[hash]; !ok {
+		if !c.pinned {
+			var oldestKey uint64
+			var oldest time.Time
+			for key, entry := range c.cacheMap {
+				if now.Sub(entry.lastAccessTimestamp) > collectionCacheIdleTTL {
+					delete(c.cacheMap, key)
+				} else if oldest.IsZero() || entry.lastAccessTimestamp.Before(oldest) {
+					oldestKey, oldest = key, entry.lastAccessTimestamp
+				}
+			}
+			if len(c.cacheMap) >= collectionCacheMaxEntries {
+				delete(c.cacheMap, oldestKey)
+			}
+		}
 		c.cacheMap[hash] = &familiesCache{}
 	}
+	c.cacheMap[hash].lastAccessTimestamp = now
 	return c.cacheMap[hash]
 }
 
 type statsCache struct {
-	sharedSummary      *Summary
-	lastFetchErr       error
-	lastFetchTimestamp time.Time
+	lock                sync.Mutex
+	endpoint            string
+	sharedSummary       *Summary
+	lastFetchErr        error
+	lastFetchTimestamp  time.Time
+	lastAccessTimestamp time.Time
 }
 
 type kubeletStatsCache struct {
 	cacheMap map[uint64]*statsCache
 	lock     sync.Mutex
+	pinned   bool
 }
 
 func (c *kubeletStatsCache) getCacheMapEntry(hash uint64) *statsCache {
+	now := time.Now()
 	if _, ok := c.cacheMap[hash]; !ok {
+		if !c.pinned {
+			var oldestKey uint64
+			var oldest time.Time
+			for key, entry := range c.cacheMap {
+				if now.Sub(entry.lastAccessTimestamp) > collectionCacheIdleTTL {
+					delete(c.cacheMap, key)
+				} else if oldest.IsZero() || entry.lastAccessTimestamp.Before(oldest) {
+					oldestKey, oldest = key, entry.lastAccessTimestamp
+				}
+			}
+			if len(c.cacheMap) >= collectionCacheMaxEntries {
+				delete(c.cacheMap, oldestKey)
+			}
+		}
 		c.cacheMap[hash] = &statsCache{}
 	}
+	c.cacheMap[hash].lastAccessTimestamp = now
 	return c.cacheMap[hash]
 }
+
+const (
+	collectionCacheMaxEntries = 256
+	collectionCacheIdleTTL    = 10 * time.Minute
+)
 
 type module struct {
 	mb.BaseModule
@@ -90,17 +137,49 @@ type module struct {
 	kubeletStatsCache     *kubeletStatsCache
 	metricsRepo           *util.MetricsRepo
 	cacheHash             uint64
+	maxResponseBytes      int64
+	stateFamilies         map[string]struct{}
+	compactMappings       []*p.MetricsMapping
+	compactState          map[string]*compactStateCache
+}
+
+var stateMetricMappings sync.Map
+
+func RegisterStateMetricsMapping(name string, mapping *p.MetricsMapping) {
+	stateMetricMappings.Store(name, mapping)
+}
+
+func stateFamiliesFor(metricsets []string) map[string]struct{} {
+	families := make(map[string]struct{})
+	for _, name := range metricsets {
+		if !strings.HasPrefix(name, "state_") {
+			continue
+		}
+		mapping, exists := stateMetricMappings.Load(name)
+		if !exists {
+			return nil
+		}
+		for family := range mapping.(*p.MetricsMapping).Metrics {
+			families[family] = struct{}{}
+		}
+	}
+	if len(families) == 0 {
+		return nil
+	}
+	return families
 }
 
 func ModuleBuilder() func(base mb.BaseModule) (mb.Module, error) {
-	kubeStateMetricsCache := &kubeStateMetricsCache{
-		cacheMap: make(map[uint64]*familiesCache),
-	}
-	kubeletStatsCache := &kubeletStatsCache{
-		cacheMap: make(map[uint64]*statsCache),
-	}
-	metricsRepo := util.NewMetricsRepo()
 	return func(base mb.BaseModule) (mb.Module, error) {
+		limits := struct {
+			MaxResponseBytes int64 `config:"max_response_bytes"`
+		}{MaxResponseBytes: 64 << 20}
+		if err := base.UnpackConfig(&limits); err != nil {
+			return nil, err
+		}
+		if limits.MaxResponseBytes <= 0 || limits.MaxResponseBytes > 1<<30 {
+			return nil, fmt.Errorf("max_response_bytes must be between 1 and 1073741824")
+		}
 		hash, err := generateCacheHash(base.Config().Hosts)
 		if err != nil {
 			return nil, fmt.Errorf("error generating cache hash for kubeStateMetricsCache: %w", err)
@@ -108,31 +187,77 @@ func ModuleBuilder() func(base mb.BaseModule) (mb.Module, error) {
 
 		m := module{
 			BaseModule:            base,
-			kubeStateMetricsCache: kubeStateMetricsCache,
-			kubeletStatsCache:     kubeletStatsCache,
-			metricsRepo:           metricsRepo,
+			kubeStateMetricsCache: &kubeStateMetricsCache{cacheMap: make(map[uint64]*familiesCache)},
+			kubeletStatsCache:     &kubeletStatsCache{cacheMap: make(map[uint64]*statsCache)},
+			metricsRepo:           util.NewMetricsRepo(),
 			cacheHash:             hash,
+			maxResponseBytes:      limits.MaxResponseBytes,
+			stateFamilies:         stateFamiliesFor(base.Config().MetricSets),
 		}
 		return &m, nil
 	}
 }
 
 func (m *module) GetStateMetricsFamilies(prometheus p.Prometheus) ([]*dto.MetricFamily, error) {
-	m.kubeStateMetricsCache.lock.Lock()
-	defer m.kubeStateMetricsCache.lock.Unlock()
-
-	now := time.Now()
-	// NOTE: These entries will be never removed, this can be a leak if
-	// metricbeat is used to monitor clusters dynamically created.
-	// (https://github.com/elastic/beats/pull/25640#discussion_r633395213)
-	familiesCache := m.kubeStateMetricsCache.getCacheMapEntry(m.cacheHash)
-
-	if familiesCache.lastFetchTimestamp.IsZero() || now.Sub(familiesCache.lastFetchTimestamp) > m.Config().Period {
-		familiesCache.sharedFamilies, familiesCache.lastFetchErr = prometheus.GetFamilies()
-		familiesCache.lastFetchTimestamp = now
+	entry, err := m.getStateMetricsCache(prometheus, nil)
+	if err != nil {
+		return nil, err
 	}
+	return entry.sharedFamilies, nil
+}
 
-	return familiesCache.sharedFamilies, familiesCache.lastFetchErr
+func (m *module) GetStateMetricsFamiliesFor(prometheus p.Prometheus, mapping *p.MetricsMapping) ([]*dto.MetricFamily, error) {
+	entry, err := m.getStateMetricsCache(prometheus, m.stateFamilies)
+	if err != nil {
+		return nil, err
+	}
+	families := make([]*dto.MetricFamily, 0, len(mapping.Metrics))
+	for name := range mapping.Metrics {
+		if family := entry.byName[name]; family != nil {
+			families = append(families, family)
+		}
+	}
+	return families, nil
+}
+
+func (m *module) getStateMetricsCache(prometheus p.Prometheus, selected map[string]struct{}) (*familiesCache, error) {
+	endpoint := ""
+	if source, ok := prometheus.(interface{ Endpoint() string }); ok {
+		endpoint = source.Endpoint()
+	}
+	if selected != nil {
+		endpoint += "\x00selected"
+	}
+	key, err := generateURLCacheHash(m.cacheHash, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	m.kubeStateMetricsCache.lock.Lock()
+	entry := m.kubeStateMetricsCache.getCacheMapEntry(key)
+	pinned := m.kubeStateMetricsCache.pinned
+	m.kubeStateMetricsCache.lock.Unlock()
+	entry.lock.Lock()
+	defer entry.lock.Unlock()
+	now := time.Now()
+	if entry.lastFetchTimestamp.IsZero() || (!pinned && now.Sub(entry.lastFetchTimestamp) > m.Config().Period) {
+		var families []*dto.MetricFamily
+		var fetchErr error
+		if filtered, ok := prometheus.(interface {
+			GetFamiliesFor(map[string]struct{}) ([]*dto.MetricFamily, error)
+		}); ok && selected != nil {
+			families, fetchErr = filtered.GetFamiliesFor(selected)
+		} else {
+			families, fetchErr = prometheus.GetFamilies()
+		}
+		entry.sharedFamilies = families
+		entry.lastFetchErr = fetchErr
+		entry.byName = make(map[string]*dto.MetricFamily, len(families))
+		for _, family := range families {
+			entry.byName[family.GetName()] = family
+		}
+		entry.lastFetchTimestamp = now
+	}
+	return &familiesCache{sharedFamilies: entry.sharedFamilies, byName: entry.byName}, entry.lastFetchErr
 }
 
 func (m *module) GetKubeletStats(http *helper.HTTP) ([]byte, error) {
@@ -147,9 +272,6 @@ func (m *module) GetKubeletStats(http *helper.HTTP) ([]byte, error) {
 
 // GetKubeletSummary returns the parsed kubernetes.Summary from kubelet stats endpoint
 func (m *module) GetKubeletSummary(http *helper.HTTP) (*Summary, error) {
-	m.kubeletStatsCache.lock.Lock()
-	defer m.kubeletStatsCache.lock.Unlock()
-
 	now := time.Now()
 
 	// Generate cache key based on both module hash and HTTP URL to ensure
@@ -160,14 +282,18 @@ func (m *module) GetKubeletSummary(http *helper.HTTP) (*Summary, error) {
 		return nil, fmt.Errorf("error generating cache key for URL %s: %w", url, err)
 	}
 
-	// NOTE: These entries will be never removed, this can be a leak if
-	// metricbeat is used to monitor clusters dynamically created.
-	// (https://github.com/elastic/beats/pull/25640#discussion_r633395213)
+	m.kubeletStatsCache.lock.Lock()
 	statsCache := m.kubeletStatsCache.getCacheMapEntry(cacheKey)
+	statsCache.endpoint = url
+	pinned := m.kubeletStatsCache.pinned
+	m.kubeletStatsCache.lock.Unlock()
+	statsCache.lock.Lock()
+	defer statsCache.lock.Unlock()
 
-	if statsCache.lastFetchTimestamp.IsZero() || now.Sub(statsCache.lastFetchTimestamp) > m.Config().Period {
+	if statsCache.lastFetchTimestamp.IsZero() || (!pinned && now.Sub(statsCache.lastFetchTimestamp) > m.Config().Period) {
+		statsCache.sharedSummary = nil
 		// Fetch raw data from HTTP endpoint
-		rawData, fetchErr := http.FetchContent()
+		rawData, fetchErr := http.FetchContentWithLimit(m.maxResponseBytes)
 		if fetchErr != nil {
 			statsCache.lastFetchErr = fetchErr
 			statsCache.lastFetchTimestamp = now
@@ -189,6 +315,27 @@ func (m *module) GetKubeletSummary(http *helper.HTTP) (*Summary, error) {
 	}
 
 	return statsCache.sharedSummary, statsCache.lastFetchErr
+}
+
+func (m *module) BeginCollection() {
+	m.resetCollection(true)
+}
+
+func (m *module) EndCollection() {
+	m.resetCollection(false)
+}
+
+func (m *module) resetCollection(pinned bool) {
+	m.kubeStateMetricsCache.lock.Lock()
+	m.compactState = nil
+	m.compactMappings = nil
+	m.kubeStateMetricsCache.cacheMap = make(map[uint64]*familiesCache)
+	m.kubeStateMetricsCache.pinned = pinned
+	m.kubeStateMetricsCache.lock.Unlock()
+	m.kubeletStatsCache.lock.Lock()
+	m.kubeletStatsCache.cacheMap = make(map[uint64]*statsCache)
+	m.kubeletStatsCache.pinned = pinned
+	m.kubeletStatsCache.lock.Unlock()
 }
 
 func generateCacheHash(host []string) (uint64, error) {

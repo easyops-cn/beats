@@ -18,6 +18,9 @@ func newSumMetricBuilder(field string, originMetric []string, groupKeys []string
 }
 
 func (builder *sumMetricBuilder) Build(events []mapstr.M) []mapstr.M {
+	if len(builder.originMetrics) == 1 {
+		return builder.buildSingleMetric(events)
+	}
 	var result []mapstr.M
 	eventMap := GroupEventsByKeys(events, builder.groupKeys)
 	for _, es := range eventMap {
@@ -32,6 +35,41 @@ func (builder *sumMetricBuilder) Build(events []mapstr.M) []mapstr.M {
 		}
 		_, _ = rs.Put(builder.field, builder.sum(es, builder.originMetrics))
 		result = append(result, rs)
+	}
+	return result
+}
+
+func (builder *sumMetricBuilder) buildSingleMetric(events []mapstr.M) []mapstr.M {
+	type groupSum struct {
+		event mapstr.M
+		value float64
+	}
+	groups := make(map[string]*groupSum)
+	for _, event := range events {
+		key, err := GenerateGroupValue(event, builder.groupKeys)
+		if err != nil {
+			continue
+		}
+		group := groups[key]
+		if group == nil {
+			group = &groupSum{event: make(mapstr.M)}
+			for _, dimension := range builder.groupKeys {
+				value, _ := event.GetValue(dimension)
+				_, _ = group.event.Put(dimension, value)
+			}
+			groups[key] = group
+		}
+		if value, err := event.GetValue(builder.originMetrics[0]); err == nil {
+			group.value += ConvertNumericValue(value)
+		}
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	result := make([]mapstr.M, 0, len(groups))
+	for _, group := range groups {
+		_, _ = group.event.Put(builder.field, group.value)
+		result = append(result, group.event)
 	}
 	return result
 }
