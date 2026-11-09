@@ -50,7 +50,6 @@ func eventMapping(summary *kubernetes.Summary, metricsRepo *util.MetricsRepo, lo
 		var podCoreLimit, podMemLimit float64
 
 		podId := util.NewPodId(pod.PodRef.Namespace, pod.PodRef.Name)
-		podStore := nodeStore.GetPodStore(podId)
 
 		for _, container := range pod.Containers {
 			usageNanoCores += container.CPU.UsageNanoCores
@@ -61,17 +60,16 @@ func eventMapping(summary *kubernetes.Summary, metricsRepo *util.MetricsRepo, lo
 			pageFaults += container.Memory.PageFaults
 			majorPageFaults += container.Memory.MajorPageFaults
 
-			containerStore := podStore.GetContainerStore(container.Name)
-			containerMetrics := containerStore.GetContainerMetrics()
+			containerMetrics := nodeStore.GetContainerResourceLimits(podId, container.Name)
 
 			containerCoresLimit := nodeCores
-			if containerMetrics.CoresLimit != nil {
-				containerCoresLimit = containerMetrics.CoresLimit.Value
+			if containerMetrics.HasCoresLimit {
+				containerCoresLimit = containerMetrics.Cores
 			}
 
 			containerMemLimit := nodeMem
-			if containerMetrics.MemoryLimit != nil {
-				containerMemLimit = containerMetrics.MemoryLimit.Value
+			if containerMetrics.HasMemoryLimit {
+				containerMemLimit = containerMetrics.Memory
 			}
 			podCoreLimit += containerCoresLimit
 			podMemLimit += containerMemLimit

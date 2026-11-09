@@ -135,18 +135,18 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 	if err != nil {
 		return err
 	}
-	m.enricher.Enrich(events)
-	for _, e := range events {
-		event := mb.TransformMapStrToEvent("kubernetes", e, nil)
+	util.EnrichAndConsumeEvents(events, m.enricher, func(fields mapstr.M) bool {
+		event := mb.TransformMapStrToEvent("kubernetes", fields, nil)
 		if m.clusterMeta != nil {
 			event.RootFields.DeepUpdate(m.clusterMeta)
 		}
 
 		isOpen := reporter.Event(event)
 		if !isOpen {
-			return nil
+			return false
 		}
-	}
+		return true
+	}, reporter)
 
 	return nil
 }

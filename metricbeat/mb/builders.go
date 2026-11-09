@@ -64,6 +64,11 @@ func NewModule(config *conf.C, r *Register) (Module, []MetricSet, error) {
 
 	metricsets, err := initMetricSets(r, module)
 	if err != nil {
+		for _, metricset := range metricsets {
+			if closer, ok := metricset.(Closer); ok {
+				_ = closer.Close()
+			}
+		}
 		return nil, nil, err
 	}
 
