@@ -130,6 +130,49 @@ const (
 	collectionCacheIdleTTL    = 10 * time.Minute
 )
 
+type sharedCollectionCaches struct {
+	kubeStateMetricsCache *kubeStateMetricsCache
+	kubeletStatsCache     *kubeletStatsCache
+	lastAccessTimestamp   time.Time
+}
+
+var collectionCaches = struct {
+	sync.Mutex
+	entries map[uint64]*sharedCollectionCaches
+}{entries: make(map[uint64]*sharedCollectionCaches)}
+
+func getSharedCollectionCaches(hash uint64) *sharedCollectionCaches {
+	now := time.Now()
+	collectionCaches.Lock()
+	defer collectionCaches.Unlock()
+	if entry := collectionCaches.entries[hash]; entry != nil {
+		entry.lastAccessTimestamp = now
+		return entry
+	}
+	for key, entry := range collectionCaches.entries {
+		if now.Sub(entry.lastAccessTimestamp) > collectionCacheIdleTTL {
+			delete(collectionCaches.entries, key)
+		}
+	}
+	if len(collectionCaches.entries) >= collectionCacheMaxEntries {
+		var oldestKey uint64
+		var oldest time.Time
+		for key, entry := range collectionCaches.entries {
+			if oldest.IsZero() || entry.lastAccessTimestamp.Before(oldest) {
+				oldestKey, oldest = key, entry.lastAccessTimestamp
+			}
+		}
+		delete(collectionCaches.entries, oldestKey)
+	}
+	entry := &sharedCollectionCaches{
+		kubeStateMetricsCache: &kubeStateMetricsCache{cacheMap: make(map[uint64]*familiesCache)},
+		kubeletStatsCache:     &kubeletStatsCache{cacheMap: make(map[uint64]*statsCache)},
+		lastAccessTimestamp:   now,
+	}
+	collectionCaches.entries[hash] = entry
+	return entry
+}
+
 type module struct {
 	mb.BaseModule
 
@@ -185,10 +228,11 @@ func ModuleBuilder() func(base mb.BaseModule) (mb.Module, error) {
 			return nil, fmt.Errorf("error generating cache hash for kubeStateMetricsCache: %w", err)
 		}
 
+		shared := getSharedCollectionCaches(hash)
 		m := module{
 			BaseModule:            base,
-			kubeStateMetricsCache: &kubeStateMetricsCache{cacheMap: make(map[uint64]*familiesCache)},
-			kubeletStatsCache:     &kubeletStatsCache{cacheMap: make(map[uint64]*statsCache)},
+			kubeStateMetricsCache: shared.kubeStateMetricsCache,
+			kubeletStatsCache:     shared.kubeletStatsCache,
 			metricsRepo:           util.NewMetricsRepo(),
 			cacheHash:             hash,
 			maxResponseBytes:      limits.MaxResponseBytes,
