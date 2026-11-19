@@ -21,6 +21,7 @@
 package process
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
@@ -84,6 +85,10 @@ func TestMultiInstanceConfig(t *testing.T) {
 		"artifactInsts": []map[string]interface{}{
 			{
 				"instanceId": "test-instance-1",
+				"cmdlineTransform": map[string]interface{}{
+					"pattern":     ` --server\.port=[^ ]+`,
+					"replacement": "",
+				},
 				"processMatchGroups": []map[string]interface{}{
 					{"cmdline": []string{"test-process"}},
 				},
@@ -108,6 +113,30 @@ func TestMultiInstanceConfig(t *testing.T) {
 	assert.Equal(t, "test-instance-1", ms.artifactInsts[0].InstanceId)
 	assert.Equal(t, 1, len(ms.artifactInsts[0].ProcessMatchGroups))
 	assert.Equal(t, "test-process", ms.artifactInsts[0].ProcessMatchGroups[0].Cmdline[0])
+	assert.NotNil(t, ms.cmdlineTransforms["test-instance-1"])
+}
+
+func TestCmdlineTransformIsOutputOnly(t *testing.T) {
+	pattern := regexp.MustCompile(` --server\.port=[^ ]+`)
+	ms := &MetricSet{
+		cmdlineTransforms:   map[string]*regexp.Regexp{"instance-1": pattern},
+		cmdlineReplacements: map[string]string{"instance-1": ""},
+	}
+	raw := "java -jar app.jar --server.port=8080"
+
+	aliveData := NewAliveProcessData()
+	aliveData.CmdlineList = []string{raw}
+	assert.Empty(t, (&MetricSet{}).checkProcessMatchGroups(ArtifactInstCheck{
+		ProcessMatchGroups: []ProcessMatchGroup{{Cmdline: []string{"java", "app.jar"}}},
+	}, aliveData))
+	assert.Equal(t, "java -jar app.jar", ms.transformCmdline("instance-1", raw))
+	assert.Equal(t, raw, ms.transformCmdline("unknown", raw))
+
+	event := ms.buildDeadProcessEvent(DeadProcessInfo{InstanceId: "instance-1", Identifier: raw})
+	root := event.RootFields["process"].(mapstr.M)
+	value, err := root.GetValue("command_line")
+	assert.NoError(t, err)
+	assert.Equal(t, "java -jar app.jar", value)
 }
 
 // TestProcessMatchGroupsWithSamePort tests the scenario where two instances

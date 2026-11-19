@@ -47,6 +47,23 @@ process while this metricset is running, these changes are not detected. Caching
 can be disabled by setting `process.cmdline.cache.enabled: false` in the
 configuration.
 
+*`artifactInsts[].cmdlineTransform`*:: Optionally transforms the reported
+`process.command_line` value for a deployment instance. The original command
+line is still used for process matching. `pattern` is a Go regular expression
+and `replacement` supports capture groups such as `$1` and `$2`.
+
+[source,yaml]
+----
+metricbeat.modules:
+- module: system
+  metricsets: ["process"]
+  artifactInsts:
+  - instanceId: "example"
+    cmdlineTransform:
+      pattern: ' --server\.port=[^ ]+'
+      replacement: ''
+----
+
 *`process.env.whitelist`*:: This metricset can collect the environment variables
 that were used to start the process. This feature is available on Linux, Darwin,
 and FreeBSD. No environment variables are collected by default because they
