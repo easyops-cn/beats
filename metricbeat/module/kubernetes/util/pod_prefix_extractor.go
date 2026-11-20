@@ -10,9 +10,17 @@ func DuplicateWorkloadInfo(fields mapstr.M, workloadNameKey string, event mb.Eve
 
 	workloadName, _ := workloadNameValue.(string)
 
-	event.ModuleFields.DeepUpdate(mapstr.M{
-		"workload": mapstr.M{
-			"name": workloadName,
-		},
-	})
+	workload := mapstr.M{}
+	switch existing := event.ModuleFields["workload"].(type) {
+	case mapstr.M:
+		for field, value := range existing {
+			workload[field] = value
+		}
+	case map[string]interface{}:
+		for field, value := range existing {
+			workload[field] = value
+		}
+	}
+	workload["name"] = workloadName
+	event.ModuleFields["workload"] = workload
 }

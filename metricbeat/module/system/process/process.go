@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -75,15 +76,23 @@ func NewAliveProcessData() *AliveProcessData {
 	}
 }
 
+type processStats interface {
+	Get() ([]mapstr.M, []mapstr.M, error)
+}
+
 // MetricSet that fetches process metrics.
 type MetricSet struct {
 	mb.BaseMetricSet
-	stats  *process.Stats
+	stats  processStats
 	cgroup *cgroup.Reader
 	perCPU bool
 
 	// Multi-instance configuration
 	artifactInsts []ArtifactInstCheck
+
+	// Output-only command line transforms keyed by deployment instance.
+	cmdlineTransforms   map[string]*regexp.Regexp
+	cmdlineReplacements map[string]string
 
 	// Performance optimization cache
 	pidToPorts map[int][]string // PID → port list
@@ -125,38 +134,53 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		}
 	}
 
-	m := &MetricSet{
-		BaseMetricSet:   base,
-		artifactInsts:   config.ArtifactInsts,
-		pidToPorts:      make(map[int][]string),
-		cmdlineToInstId: make(map[string]string),
-		portToInstId:    make(map[string][]string),
-		stats: &process.Stats{
-			Procs:         config.Procs,
-			Hostfs:        sys,
-			EnvWhitelist:  config.EnvWhitelist,
-			CPUTicks:      config.IncludeCPUTicks || (config.CPUTicks != nil && *config.CPUTicks),
-			CacheCmdLine:  config.CacheCmdLine,
-			IncludeTop:    config.IncludeTop,
-			EnableCgroups: enableCgroups,
-			CgroupOpts: cgroup.ReaderOptions{
-				RootfsMountpoint:  sys,
-				IgnoreRootCgroups: true,
-			},
-			CheckCmdlines: checkCmdlines,
+	stats := &process.Stats{
+		Procs:         config.Procs,
+		Hostfs:        sys,
+		EnvWhitelist:  config.EnvWhitelist,
+		CPUTicks:      config.IncludeCPUTicks || (config.CPUTicks != nil && *config.CPUTicks),
+		CacheCmdLine:  config.CacheCmdLine,
+		IncludeTop:    config.IncludeTop,
+		EnableCgroups: enableCgroups,
+		CgroupOpts: cgroup.ReaderOptions{
+			RootfsMountpoint:  sys,
+			IgnoreRootCgroups: true,
 		},
-		perCPU: config.IncludePerCPU,
+		CheckCmdlines: checkCmdlines,
+	}
+
+	m := &MetricSet{
+		BaseMetricSet:       base,
+		artifactInsts:       config.ArtifactInsts,
+		cmdlineTransforms:   make(map[string]*regexp.Regexp),
+		cmdlineReplacements: make(map[string]string),
+		pidToPorts:          make(map[int][]string),
+		cmdlineToInstId:     make(map[string]string),
+		portToInstId:        make(map[string][]string),
+		stats:               stats,
+		perCPU:              config.IncludePerCPU,
+	}
+	for _, inst := range config.ArtifactInsts {
+		if inst.CmdlineTransform == nil || inst.CmdlineTransform.Pattern == "" {
+			continue
+		}
+		compiled, err := regexp.Compile(inst.CmdlineTransform.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cmdlineTransform.pattern for instance %q: %w", inst.InstanceId, err)
+		}
+		m.cmdlineTransforms[inst.InstanceId] = compiled
+		m.cmdlineReplacements[inst.InstanceId] = inst.CmdlineTransform.Replacement
 	}
 
 	// If hostfs is set, we may not want to force the hierarchy override, as the user could be expecting a custom path.
 	if !sys.IsSet() {
 		override, isset := os.LookupEnv("LIBBEAT_MONITORING_CGROUPS_HIERARCHY_OVERRIDE")
 		if isset {
-			m.stats.CgroupOpts.CgroupsHierarchyOverride = override
+			stats.CgroupOpts.CgroupsHierarchyOverride = override
 		}
 	}
 
-	err := m.stats.Init()
+	err := stats.Init()
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +434,7 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 				procCopy.Delete("_matched_instance_ids")
 				procCopy.Put("instanceId", instId)
 				rootCopy.Put("instanceId", instId)
+				m.transformProcessCmdline(rootCopy, instId)
 
 				if !r.Event(mb.Event{
 					MetricSetFields: procCopy,
@@ -420,18 +445,18 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 			}
 		} else {
 			// Single or no instance ID, normal reporting
-			if roots[i] == nil {
-				roots[i] = mapstr.M{}
-			}
+			// Keep output-only transforms out of the provider's cached/root data.
+			rootCopy := roots[i].Clone()
 			if instanceId, exists := procs[i]["instanceId"]; exists {
-				roots[i].Put("instanceId", instanceId)
+				rootCopy.Put("instanceId", instanceId)
+				m.transformProcessCmdline(rootCopy, fmt.Sprint(instanceId))
 			} else {
-				roots[i].Put("instanceId", "")
+				rootCopy.Put("instanceId", "")
 			}
 
 			if !r.Event(mb.Event{
 				MetricSetFields: procs[i],
-				RootFields:      roots[i],
+				RootFields:      rootCopy,
 			}) {
 				return nil
 			}
@@ -814,13 +839,14 @@ func (m *MetricSet) findInstanceIdByProcessMatchGroups(cmdline string) string {
 
 // buildDeadProcessEvent builds an event for a dead/abnormal process
 func (m *MetricSet) buildDeadProcessEvent(deadProc DeadProcessInfo) mb.Event {
+	cmdline := m.transformCmdline(deadProc.InstanceId, deadProc.Identifier)
 	metricSetFields := mapstr.M{
 		"alive_state": int64(1), // 1 indicates abnormal
 	}
 
 	rootFields := mapstr.M{
 		"process": mapstr.M{
-			"command_line": deadProc.Identifier,
+			"command_line": cmdline,
 		},
 		"instanceId": deadProc.InstanceId,
 	}
@@ -829,4 +855,27 @@ func (m *MetricSet) buildDeadProcessEvent(deadProc DeadProcessInfo) mb.Event {
 		MetricSetFields: metricSetFields,
 		RootFields:      rootFields,
 	}
+}
+
+func (m *MetricSet) transformProcessCmdline(root mapstr.M, instanceID string) {
+	if root == nil {
+		return
+	}
+	value, err := root.GetValue("process.command_line")
+	if err != nil {
+		return
+	}
+	cmdline, ok := value.(string)
+	if !ok {
+		return
+	}
+	_, _ = root.Put("process.command_line", m.transformCmdline(instanceID, cmdline))
+}
+
+func (m *MetricSet) transformCmdline(instanceID, cmdline string) string {
+	pattern, ok := m.cmdlineTransforms[instanceID]
+	if !ok || pattern == nil {
+		return cmdline
+	}
+	return pattern.ReplaceAllString(cmdline, m.cmdlineReplacements[instanceID])
 }

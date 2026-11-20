@@ -39,6 +39,38 @@ type ContainerMetrics struct {
 	MemoryLimit *Float64Metric
 }
 
+type ContainerResourceLimits struct {
+	Cores          float64
+	Memory         float64
+	HasCoresLimit  bool
+	HasMemoryLimit bool
+}
+
+func (ns *NodeStore) GetContainerResourceLimits(podID PodId, containerName string) ContainerResourceLimits {
+	ns.RLock()
+	pod := ns.pods[podID]
+	ns.RUnlock()
+	if pod == nil {
+		return ContainerResourceLimits{}
+	}
+	pod.RLock()
+	container := pod.containers[containerName]
+	pod.RUnlock()
+	if container == nil {
+		return ContainerResourceLimits{}
+	}
+	container.RLock()
+	defer container.RUnlock()
+	var limits ContainerResourceLimits
+	if container.metrics.CoresLimit != nil {
+		limits.Cores, limits.HasCoresLimit = container.metrics.CoresLimit.Value, true
+	}
+	if container.metrics.MemoryLimit != nil {
+		limits.Memory, limits.HasMemoryLimit = container.metrics.MemoryLimit.Value, true
+	}
+	return limits
+}
+
 // NodeMetrics contains all the metrics for a Node.
 type NodeMetrics struct {
 	CoresAllocatable  *Float64Metric
@@ -70,7 +102,11 @@ type NodeStore struct {
 // MetricsRepo contains a set of (nodeName, NodeStore) for each Node in the cluster.
 type MetricsRepo struct {
 	sync.RWMutex
-	nodes map[string]*NodeStore
+	nodes          map[string]*NodeStore
+	enricherMu     sync.Mutex
+	enrichers      map[string]*sharedEnricher
+	metadataLabels metadataLabelInterner
+	metadataTrees  metadataTreeInterner
 }
 
 // NewPodId returns a new PodId object given a Namespace and a Pod name.
