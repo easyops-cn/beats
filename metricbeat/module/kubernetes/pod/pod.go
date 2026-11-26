@@ -114,9 +114,7 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 		return
 	}
 
-	m.enricher.Enrich(events)
-
-	for _, event := range events {
+	util.EnrichAndConsumeEvents(events, m.enricher, func(event mapstr.M) bool {
 
 		e, err := util.CreateEvent(event, "kubernetes.pod")
 		if err != nil {
@@ -139,9 +137,10 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 
 		if reported := reporter.Event(e); !reported {
 			m.Logger().Debug("error trying to emit event")
-			return
+			return false
 		}
-	}
+		return true
+	}, reporter)
 }
 
 // Close stops this metricset

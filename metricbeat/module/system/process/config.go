@@ -34,11 +34,19 @@ type ProcessMatchGroup struct {
 	Cmdline []string `config:"cmdline"` // All keywords must match (AND logic)
 }
 
+// CmdlineTransform controls how process.command_line is exposed in reported
+// events. Matching always uses the original command line.
+type CmdlineTransform struct {
+	Pattern     string `config:"pattern"`
+	Replacement string `config:"replacement"`
+}
+
 // ArtifactInstCheck represents deployment instance check configuration
 type ArtifactInstCheck struct {
 	InstanceId         string              `config:"instanceId"`         // Instance ID
 	ProcessMatchGroups []ProcessMatchGroup `config:"processMatchGroups"` // Process match groups: OR between groups, AND within group
 	ProcessList        []ProcessCheckItem  `config:"processList"`        // Process list (cmdline + port check)
+	CmdlineTransform   *CmdlineTransform   `config:"cmdlineTransform"`   // Optional output-only command line transform
 }
 
 // Config stores the system/process config options

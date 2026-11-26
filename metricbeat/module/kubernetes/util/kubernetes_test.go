@@ -140,6 +140,25 @@ func TestBuildMetadataEnricher(t *testing.T) {
 	assert.Equal(t, "newuid", events[0]["uid"])
 }
 
+func TestNodeFromMetricsetHost(t *testing.T) {
+	tests := map[string]struct {
+		host string
+		want string
+	}{
+		"empty":             {host: "", want: ""},
+		"IPv4 with port":    {host: "10.120.6.22:10250", want: "10.120.6.22"},
+		"IPv4 without port": {host: "10.120.6.22", want: "10.120.6.22"},
+		"DNS with port":     {host: "worker-1:10250", want: "worker-1"},
+		"IPv6 with port":    {host: "[2001:db8::1]:10250", want: "2001:db8::1"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.want, nodeFromMetricsetHost(test.host))
+		})
+	}
+}
+
 func TestMetadataEnricherInitializesFromSyncedStore(t *testing.T) {
 	resource := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
 		UID:       types.UID("initial-uid"),

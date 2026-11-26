@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
+	"github.com/elastic/elastic-agent-autodiscover/kubernetes/metadata"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 )
 
@@ -170,4 +171,40 @@ func enrichPodWorkload(meta mapstr.M, pod *kubernetes.Pod, resolver *workloadRes
 			},
 		},
 	})
+}
+
+func cachedPodMetadataConfig(config *metadata.AddResourceMetadataConfig, resolver *workloadResolver) *metadata.AddResourceMetadataConfig {
+	if resolver == nil {
+		return config
+	}
+	cached := *config
+	cached.Deployment, cached.CronJob = false, false
+	return &cached
+}
+
+func enrichPodMetadata(meta mapstr.M, pod *kubernetes.Pod, resolver *workloadResolver, config *metadata.AddResourceMetadataConfig) {
+	enrichPodWorkload(meta, pod, resolver)
+	if resolver == nil {
+		return
+	}
+	identity, ok := resolver.resolve(pod)
+	if !ok {
+		return
+	}
+	if identity.Kind == "deployment" && config.Deployment {
+		_, _ = meta.Put("kubernetes.deployment.name", identity.Name)
+	}
+	if identity.Kind == "cronjob" && config.CronJob {
+		_, _ = meta.Put("kubernetes.cronjob.name", identity.Name)
+	}
+}
+
+func enrichPodStatusMetadata(meta mapstr.M, pod *kubernetes.Pod) {
+	_, _ = meta.Put("kubernetes.pod.status.reason", pod.Status.Reason)
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == "Ready" && condition.Status == "True" && !condition.LastTransitionTime.IsZero() {
+			_, _ = meta.Put("kubernetes.pod.status.ready_time", float64(condition.LastTransitionTime.Unix()))
+			break
+		}
+	}
 }

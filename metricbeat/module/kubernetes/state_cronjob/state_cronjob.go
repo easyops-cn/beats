@@ -19,6 +19,7 @@ package state_cronjob
 
 import (
 	"fmt"
+	"github.com/elastic/elastic-agent-libs/mapstr"
 
 	"github.com/elastic/beats/v7/metricbeat/module/kubernetes/util"
 	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
@@ -29,6 +30,7 @@ import (
 )
 
 func init() {
+	k8smod.RegisterStateMetricsMapping("state_cronjob", cronJobMapping)
 	mb.Registry.MustAddMetricSet("kubernetes", "state_cronjob",
 		NewCronJobMetricSet,
 		mb.WithHostParser(p.HostParser))
@@ -45,6 +47,24 @@ type CronJobMetricSet struct {
 	mapping    *p.MetricsMapping
 	mod        k8smod.Module
 	enricher   util.Enricher
+}
+
+var cronJobMapping = &p.MetricsMapping{
+	Metrics: map[string]p.MetricMap{
+		"kube_cronjob_info":                           p.InfoMetric(),
+		"kube_cronjob_created":                        p.Metric("created.sec"),
+		"kube_cronjob_status_active":                  p.Metric("active.count"),
+		"kube_cronjob_status_last_schedule_time":      p.Metric("last_schedule.sec"),
+		"kube_cronjob_next_schedule_time":             p.Metric("next_schedule.sec"),
+		"kube_cronjob_spec_suspend":                   p.BooleanMetric("is_suspended"),
+		"kube_cronjob_spec_starting_deadline_seconds": p.Metric("deadline.sec"),
+	},
+	Labels: map[string]p.LabelMap{
+		"cronjob":            p.KeyLabel("name"),
+		"namespace":          p.KeyLabel(mb.ModuleDataKey + ".namespace"),
+		"schedule":           p.Label("schedule"),
+		"concurrency_policy": p.Label("concurrency"),
+	},
 }
 
 // NewCronJobMetricSet returns a prometheus based metricset for CronJobs
@@ -64,23 +84,7 @@ func NewCronJobMetricSet(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		prometheus:    prometheus,
 		mod:           mod,
 		enricher:      util.NewResourceMetadataEnricher(base, &kubernetes.CronJob{}, mod.GetMetricsRepo(), false),
-		mapping: &p.MetricsMapping{
-			Metrics: map[string]p.MetricMap{
-				"kube_cronjob_info":                           p.InfoMetric(),
-				"kube_cronjob_created":                        p.Metric("created.sec"),
-				"kube_cronjob_status_active":                  p.Metric("active.count"),
-				"kube_cronjob_status_last_schedule_time":      p.Metric("last_schedule.sec"),
-				"kube_cronjob_next_schedule_time":             p.Metric("next_schedule.sec"),
-				"kube_cronjob_spec_suspend":                   p.BooleanMetric("is_suspended"),
-				"kube_cronjob_spec_starting_deadline_seconds": p.Metric("deadline.sec"),
-			},
-			Labels: map[string]p.LabelMap{
-				"cronjob":            p.KeyLabel("name"),
-				"namespace":          p.KeyLabel(mb.ModuleDataKey + ".namespace"),
-				"schedule":           p.KeyLabel("schedule"),
-				"concurrency_policy": p.KeyLabel("concurrency"),
-			},
-		},
+		mapping:       cronJobMapping,
 	}
 
 	return &ms, nil
@@ -95,23 +99,14 @@ func (m *CronJobMetricSet) Fetch(reporter mb.ReporterV2) {
 		m.enricher.Start()
 	}
 
-	families, err := m.mod.GetStateMetricsFamilies(m.prometheus)
-	if err != nil {
-		m.Logger().Error(err)
-		reporter.Error(err)
-		return
-	}
-	events, err := m.prometheus.ProcessMetrics(families, m.mapping)
+	events, err := k8smod.GetStateMetricsSource(m.mod, m.prometheus, m.mapping)
 	if err != nil {
 		m.Logger().Error(err)
 		reporter.Error(err)
 		return
 	}
 
-	if m.enricher != nil {
-		m.enricher.Enrich(events)
-	}
-	for _, event := range events {
+	util.EnrichAndConsumeSource(events, m.enricher, func(event mapstr.M) bool {
 		e, err := util.CreateEvent(event, "kubernetes.state_cronjob")
 		if err != nil {
 			m.Logger().Error(err)
@@ -121,9 +116,10 @@ func (m *CronJobMetricSet) Fetch(reporter mb.ReporterV2) {
 
 		if reported := reporter.Event(e); !reported {
 			m.Logger().Debug("error trying to emit event")
-			return
+			return false
 		}
-	}
+		return true
+	}, reporter)
 }
 
 // Close stops this metricset

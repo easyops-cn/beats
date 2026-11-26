@@ -125,7 +125,7 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 		return
 	}
 
-	m.enricher.Enrich(events)
+	util.EnrichForReporter(m.enricher, events, reporter)
 	for _, event := range events {
 		e, err := util.CreateEvent(event, "kubernetes.node")
 		if err != nil {

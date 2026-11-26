@@ -27,6 +27,7 @@ import (
 	k8smod "github.com/elastic/beats/v7/metricbeat/module/kubernetes"
 	"github.com/elastic/beats/v7/metricbeat/module/kubernetes/util"
 	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
+	"github.com/elastic/elastic-agent-libs/mapstr"
 )
 
 const (
@@ -85,6 +86,7 @@ var (
 // init registers the MetricSet with the central registry.
 // The New method will be called after the setup of the module and before starting to fetch data
 func init() {
+	k8smod.RegisterStateMetricsMapping("state_pod", mapping)
 	mb.Registry.MustAddMetricSet("kubernetes", "state_pod", New,
 		mb.WithHostParser(hostParser),
 	)
@@ -127,22 +129,14 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 	m.enricher.Start()
 
-	families, err := m.mod.GetStateMetricsFamilies(m.prometheus)
-	if err != nil {
-		m.Logger().Error(err)
-		reporter.Error(err)
-		return
-	}
-	events, err := m.prometheus.ProcessMetrics(families, mapping)
+	events, err := k8smod.GetStateMetricsSource(m.mod, m.prometheus, mapping)
 	if err != nil {
 		m.Logger().Error(err)
 		reporter.Error(err)
 		return
 	}
 
-	m.enricher.Enrich(events)
-
-	for _, event := range events {
+	util.EnrichAndConsumeSource(events, m.enricher, func(event mapstr.M) bool {
 
 		e, err := util.CreateEvent(event, "kubernetes.state_pod")
 		if err != nil {
@@ -151,9 +145,10 @@ func (m *MetricSet) Fetch(reporter mb.ReporterV2) {
 
 		if reported := reporter.Event(e); !reported {
 			m.Logger().Debug("error trying to emit event")
-			return
+			return false
 		}
-	}
+		return true
+	}, reporter)
 }
 
 // Close stops this metricset

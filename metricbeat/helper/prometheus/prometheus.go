@@ -51,16 +51,33 @@ type Prometheus interface {
 
 type prometheus struct {
 	httpfetcher
-	logger *logp.Logger
-	parser *Parser
+	logger           *logp.Logger
+	parser           *Parser
+	maxResponseBytes int64
 }
 
 type httpfetcher interface {
 	FetchResponse() (*http.Response, error)
 }
 
+func (p *prometheus) Endpoint() string {
+	if source, ok := p.httpfetcher.(interface{ GetURI() string }); ok {
+		return source.GetURI()
+	}
+	return ""
+}
+
 // NewPrometheusClient creates new prometheus helper
 func NewPrometheusClient(base mb.BaseMetricSet) (Prometheus, error) {
+	limits := struct {
+		MaxResponseBytes int64 `config:"max_response_bytes"`
+	}{MaxResponseBytes: 64 << 20}
+	if err := base.Module().UnpackConfig(&limits); err != nil {
+		return nil, err
+	}
+	if limits.MaxResponseBytes <= 0 || limits.MaxResponseBytes > 1<<30 {
+		return nil, fmt.Errorf("max_response_bytes must be between 1 and 1073741824")
+	}
 	http, err := helper.NewHTTP(base)
 	if err != nil {
 		return nil, err
@@ -69,14 +86,53 @@ func NewPrometheusClient(base mb.BaseMetricSet) (Prometheus, error) {
 	http.SetHeaderDefault("Accept", acceptHeader)
 	http.SetHeaderDefault("Accept-Encoding", "gzip")
 	return &prometheus{
-		http,
-		base.Logger(),
-		NewParser(),
+		httpfetcher:      http,
+		logger:           base.Logger(),
+		parser:           NewParser(),
+		maxResponseBytes: limits.MaxResponseBytes,
 	}, nil
 }
 
 // GetFamilies requests metric families from prometheus endpoint and returns them
 func (p *prometheus) GetFamilies() ([]*dto.MetricFamily, error) {
+	return p.getFamilies(nil)
+}
+
+func (p *prometheus) GetFamiliesFor(selected map[string]struct{}) ([]*dto.MetricFamily, error) {
+	return p.getFamilies(selected)
+}
+
+func (p *prometheus) VisitFamiliesFor(selected map[string]struct{}, consume func(string, *dto.Metric) error) error {
+	response, err := p.FetchResponse()
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode > 399 {
+		return fmt.Errorf("unexpected status code %d from server", response.StatusCode)
+	}
+	var reader io.Reader = response.Body
+	if response.Header.Get("Content-Encoding") == "gzip" {
+		decompressed, err := gzip.NewReader(reader)
+		if err != nil {
+			return err
+		}
+		defer decompressed.Close()
+		reader = decompressed
+	}
+	maxBytes := p.maxResponseBytes
+	if maxBytes <= 0 {
+		maxBytes = 64 << 20
+	}
+	limited := &io.LimitedReader{R: reader, N: maxBytes + 1}
+	err = visitKubernetesSamples(limited, selected, maxBytes, consume)
+	if limited.N == 0 {
+		return fmt.Errorf("prometheus response exceeds max_response_bytes (%d)", maxBytes)
+	}
+	return err
+}
+
+func (p *prometheus) getFamilies(selected map[string]struct{}) ([]*dto.MetricFamily, error) {
 	var reader io.Reader
 
 	resp, err := p.FetchResponse()
@@ -96,9 +152,27 @@ func (p *prometheus) GetFamilies() ([]*dto.MetricFamily, error) {
 		reader = resp.Body
 	}
 
-	bodyBytes, err := ioutil.ReadAll(reader)
-	if err == nil {
-		p.logger.Debug("error received from prometheus endpoint: ", string(bodyBytes))
+	maxBytes := p.maxResponseBytes
+	if maxBytes <= 0 {
+		maxBytes = 64 << 20
+	}
+	if selected != nil {
+		if resp.StatusCode > 399 {
+			return nil, fmt.Errorf("unexpected status code %d from server", resp.StatusCode)
+		}
+		limited := &io.LimitedReader{R: reader, N: maxBytes + 1}
+		families, parseErr := parseKubernetesFamilies(limited, selected, maxBytes)
+		if limited.N == 0 {
+			return nil, fmt.Errorf("prometheus response exceeds max_response_bytes (%d)", maxBytes)
+		}
+		return families, parseErr
+	}
+	bodyBytes, err := ioutil.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(bodyBytes)) > maxBytes {
+		return nil, fmt.Errorf("prometheus response exceeds max_response_bytes (%d)", maxBytes)
 	}
 
 	if resp.StatusCode > 399 {
@@ -133,8 +207,6 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 	eventsMap := map[string]mapstr.M{}
 	// 创建keyLabels到meta的映射
 	infoMetaMap := map[string]mapstr.M{}
-	// 创建keyLabels到事件索引集合的映射
-	keyLabelsToEventIndices := map[string]map[int]struct{}{}
 
 	// 遍历所有指标族（metric family）
 	for _, family := range families {
@@ -207,14 +279,11 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 			// 处理info类型的指标
 			if _, ok = m.(*infoMetric); ok {
 				// 将labels合并到keyLabels中
-				metaInfo := mapstr.M{}
-				metaInfo.DeepUpdate(labels)
-
 				// 如果已经有对应的meta，则合并
 				if existingMeta, exists := infoMetaMap[keyLabelsHash]; exists {
-					existingMeta.DeepUpdate(metaInfo)
+					existingMeta.DeepUpdate(labels)
 				} else {
-					infoMetaMap[keyLabelsHash] = metaInfo
+					infoMetaMap[keyLabelsHash] = labels
 				}
 				continue
 			}
@@ -222,7 +291,11 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 			// 处理普通指标
 			if field != "" {
 				// 获取或创建事件
-				event := getEvent(eventsMap, keyLabels)
+				event := eventsMap[keyLabelsHash]
+				if event == nil {
+					event = keyLabels
+					eventsMap[keyLabelsHash] = event
+				}
 				// 创建更新数据
 				update := mapstr.M{}
 				update.Put(field, value)
@@ -242,28 +315,12 @@ func (p *prometheus) ProcessMetrics(families []*dto.MetricFamily, mapping *Metri
 		}
 	}
 
-	// 将eventsMap转换为events数组，同时建立keyLabels到事件索引的映射
 	events := make([]mapstr.M, 0, len(eventsMap))
 	for keyLabelsHash, event := range eventsMap {
-		eventIndex := len(events)
+		if meta := infoMetaMap[keyLabelsHash]; meta != nil {
+			event.DeepUpdate(meta)
+		}
 		events = append(events, event)
-
-		// 更新keyLabels到事件索引的映射
-		if _, exists := keyLabelsToEventIndices[keyLabelsHash]; !exists {
-			keyLabelsToEventIndices[keyLabelsHash] = make(map[int]struct{})
-		}
-		keyLabelsToEventIndices[keyLabelsHash][eventIndex] = struct{}{}
-	}
-
-	// 将info meta信息更新到对应的事件中
-	for keyLabelsHash, meta := range infoMetaMap {
-		if eventIndices, exists := keyLabelsToEventIndices[keyLabelsHash]; exists {
-			for idx := range eventIndices {
-				if idx < len(events) {
-					events[idx].DeepUpdate(meta)
-				}
-			}
-		}
 	}
 
 	// 处理聚合指标

@@ -171,6 +171,10 @@ func (h *HTTP) SetBody(body []byte) {
 
 // FetchContent makes an HTTP request to the configured url and returns the body content.
 func (h *HTTP) FetchContent() ([]byte, error) {
+	return h.FetchContentWithLimit(0)
+}
+
+func (h *HTTP) FetchContentWithLimit(maxBytes int64) ([]byte, error) {
 	resp, err := h.FetchResponse()
 	if err != nil {
 		return nil, err
@@ -181,7 +185,14 @@ func (h *HTTP) FetchContent() ([]byte, error) {
 		return nil, fmt.Errorf("HTTP error %d in %s: %s", resp.StatusCode, h.name, resp.Status)
 	}
 
-	return ioutil.ReadAll(resp.Body)
+	if maxBytes <= 0 {
+		return ioutil.ReadAll(resp.Body)
+	}
+	content, err := ioutil.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if int64(len(content)) > maxBytes {
+		return nil, fmt.Errorf("HTTP response exceeds max_response_bytes (%d)", maxBytes)
+	}
+	return content, err
 }
 
 // FetchScanner returns a Scanner for the content.
