@@ -91,6 +91,8 @@ func TestCmdlineTransformInitialization(t *testing.T) {
 		{"empty object", map[string]interface{}{}, false},
 		{"empty pattern", map[string]interface{}{"pattern": "", "replacement": "ignored"}, false},
 		{"empty replacement", map[string]interface{}{"pattern": "java", "replacement": ""}, false},
+		{"null replacement", map[string]interface{}{"pattern": "java", "replacement": nil}, false},
+		{"missing replacement", map[string]interface{}{"pattern": "java"}, false},
 		{"invalid regexp", map[string]interface{}{"pattern": "[", "replacement": ""}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,8 +139,9 @@ func TestCmdlineTransformFetchSingleInstanceIsolation(t *testing.T) {
 			} else {
 				inst.ProcessMatchGroups = []ProcessMatchGroup{{Cmdline: []string{"--server.port=8080"}}}
 			}
-			stats := &replayProcessStats{procs: []mapstr.M{{"alive_state": int64(0)}}, roots: []mapstr.M{{"process": mapstr.M{"pid": 101, "command_line": raw}}}}
+			stats := &replayProcessStats{procs: []mapstr.M{{"alive_state": int64(0), "process": mapstr.M{"command_line": raw}}}, roots: []mapstr.M{{"process": mapstr.M{"pid": 101, "command_line": raw}}}}
 			original := stats.roots[0].Clone()
+			originalMetricFields := stats.procs[0].Clone()
 			m := fixtureTransformMetricSet([]ArtifactInstCheck{inst}, stats)
 			var previous *transformReporter
 			for fetch := 0; fetch < 2; fetch++ {
@@ -148,8 +151,12 @@ func TestCmdlineTransformFetchSingleInstanceIsolation(t *testing.T) {
 				value, err := r.events[0].RootFields.GetValue("process.command_line")
 				require.NoError(t, err)
 				assert.Equal(t, "java -jar app.jar", value)
+				metricValue, err := r.events[0].MetricSetFields.GetValue("process.command_line")
+				require.NoError(t, err)
+				assert.Equal(t, "java -jar app.jar", metricValue)
 				assert.Equal(t, "inst", r.events[0].RootFields["instanceId"])
 				assert.Equal(t, original, stats.roots[0], "Fetch must not modify provider/cached process fields")
+				assert.Equal(t, originalMetricFields, stats.procs[0])
 				if previous != nil {
 					_, err = r.events[0].RootFields.Put("process.command_line", "changed by consumer")
 					require.NoError(t, err)

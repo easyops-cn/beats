@@ -1,0 +1,134 @@
+[
+  {
+    "name": "unconfigured",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": null,
+    "replacement": ""
+  },
+  {
+    "name": "empty_array",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": null,
+    "replacement": ""
+  },
+  {
+    "name": "empty_pattern",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"\"\n      replacement: \"ignored\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "",
+    "replacement": "ignored"
+  },
+  {
+    "name": "remove_port_missing_replacement",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \" --server\\\\.port=[^ ]+\"\n      replacement: \"\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": " --server\\.port=[^ ]+",
+    "replacement": ""
+  },
+  {
+    "name": "remove_port_empty_replacement",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \" --server\\\\.port=[^ ]+\"\n      replacement: \"\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": " --server\\.port=[^ ]+",
+    "replacement": ""
+  },
+  {
+    "name": "numbered_capture",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"^(java).*\"\n      replacement: \"$$1\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "^(java).*",
+    "replacement": "$1"
+  },
+  {
+    "name": "named_capture",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"^(?P\u003cservice\u003ejava).*\"\n      replacement: \"$${service}\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "^(?P\u003cservice\u003ejava).*",
+    "replacement": "${service}"
+  },
+  {
+    "name": "literal_dollar",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"$$$$java\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "$$java"
+  },
+  {
+    "name": "windows_path",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"C:\\\\\\\\apps\\\\\\\\worker\"\n      replacement: \"C:\\\\apps\\\\service\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "C:\\\\apps\\\\worker",
+    "replacement": "C:\\apps\\service"
+  },
+  {
+    "name": "double_quote",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"--name=\\\"[^\\\"]*\\\"\"\n      replacement: \"--name=\\\"stable\\\"\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "--name=\"[^\"]*\"",
+    "replacement": "--name=\"stable\""
+  },
+  {
+    "name": "single_quote",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"'java'\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "'java'"
+  },
+  {
+    "name": "yaml_boolean",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"true\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "true"
+  },
+  {
+    "name": "yaml_null",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"null\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "null"
+  },
+  {
+    "name": "yaml_number",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"123\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "123"
+  },
+  {
+    "name": "colon",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"name: value\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "name: value"
+  },
+  {
+    "name": "hash",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"# service\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "# service"
+  },
+  {
+    "name": "newline",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"java\\nworker\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "java\nworker"
+  },
+  {
+    "name": "unicode",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"java\"\n      replacement: \"应用进程\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "java",
+    "replacement": "应用进程"
+  },
+  {
+    "name": "whitespace",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"\\\\s+--server\\\\.port=\\\\d+\"\n      replacement: \"\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "\\s+--server\\.port=\\d+",
+    "replacement": ""
+  },
+  {
+    "name": "first_rule_only",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \" --server\\\\.port=[^ ]+\"\n      replacement: \"\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": " --server\\.port=[^ ]+",
+    "replacement": ""
+  },
+  {
+    "name": "unmatched_pattern",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"does-not-exist\"\n      replacement: \"unchanged\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "does-not-exist",
+    "replacement": "unchanged"
+  },
+  {
+    "name": "anchored_extraction",
+    "yaml": "module: system\nmetricsets:\n  - process         # Per process metrics\n  #- process_summary # Process summary\nenabled: true\nperiod: 10s\nprocesses: ['.*']\nartifactInsts:\n  - instanceId: \"cycf-synthetic\"\n    cmdlineTransform:\n      pattern: \"^.*?(CustomerProcess|app).*?$$\"\n      replacement: \"$$1\"\n    processMatchGroups:\n    processList:\n      - cmdline: \"java -jar app.jar --server.port=8080\"\n        ports:\n",
+    "pattern": "^.*?(CustomerProcess|app).*?$",
+    "replacement": "$1"
+  }
+]

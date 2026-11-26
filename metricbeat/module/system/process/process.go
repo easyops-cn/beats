@@ -76,10 +76,14 @@ func NewAliveProcessData() *AliveProcessData {
 	}
 }
 
+type processStatsProvider interface {
+	Get() ([]mapstr.M, []mapstr.M, error)
+}
+
 // MetricSet that fetches process metrics.
 type MetricSet struct {
 	mb.BaseMetricSet
-	stats  *process.Stats
+	stats  processStatsProvider
 	cgroup *cgroup.Reader
 	perCPU bool
 
@@ -130,6 +134,20 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		}
 	}
 
+	stats := &process.Stats{
+		Procs:         config.Procs,
+		Hostfs:        sys,
+		EnvWhitelist:  config.EnvWhitelist,
+		CPUTicks:      config.IncludeCPUTicks || (config.CPUTicks != nil && *config.CPUTicks),
+		CacheCmdLine:  config.CacheCmdLine,
+		IncludeTop:    config.IncludeTop,
+		EnableCgroups: enableCgroups,
+		CgroupOpts: cgroup.ReaderOptions{
+			RootfsMountpoint:  sys,
+			IgnoreRootCgroups: true,
+		},
+		CheckCmdlines: checkCmdlines,
+	}
 	m := &MetricSet{
 		BaseMetricSet:       base,
 		artifactInsts:       config.ArtifactInsts,
@@ -138,21 +156,8 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		pidToPorts:          make(map[int][]string),
 		cmdlineToInstId:     make(map[string]string),
 		portToInstId:        make(map[string][]string),
-		stats: &process.Stats{
-			Procs:         config.Procs,
-			Hostfs:        sys,
-			EnvWhitelist:  config.EnvWhitelist,
-			CPUTicks:      config.IncludeCPUTicks || (config.CPUTicks != nil && *config.CPUTicks),
-			CacheCmdLine:  config.CacheCmdLine,
-			IncludeTop:    config.IncludeTop,
-			EnableCgroups: enableCgroups,
-			CgroupOpts: cgroup.ReaderOptions{
-				RootfsMountpoint:  sys,
-				IgnoreRootCgroups: true,
-			},
-			CheckCmdlines: checkCmdlines,
-		},
-		perCPU: config.IncludePerCPU,
+		stats:               stats,
+		perCPU:              config.IncludePerCPU,
 	}
 	for _, inst := range config.ArtifactInsts {
 		if inst.CmdlineTransform == nil || inst.CmdlineTransform.Pattern == "" {
@@ -170,11 +175,11 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 	if !sys.IsSet() {
 		override, isset := os.LookupEnv("LIBBEAT_MONITORING_CGROUPS_HIERARCHY_OVERRIDE")
 		if isset {
-			m.stats.CgroupOpts.CgroupsHierarchyOverride = override
+			stats.CgroupOpts.CgroupsHierarchyOverride = override
 		}
 	}
 
-	err := m.stats.Init()
+	err := stats.Init()
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +378,15 @@ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
 	if err != nil {
 		return fmt.Errorf("process stats: %w", err)
 	}
+	processCopies := make([]mapstr.M, len(procs))
+	for index, fields := range procs {
+		processCopies[index] = fields.Clone()
+	}
+	rootCopies := make([]mapstr.M, len(roots))
+	for index, fields := range roots {
+		rootCopies[index] = fields.Clone()
+	}
+	procs, roots = processCopies, rootCopies
 
 	// Build alive process data structure (performance optimization)
 	// Note: procs contains MetricSetFields (system.process.*), roots contains RootFields (process.*)

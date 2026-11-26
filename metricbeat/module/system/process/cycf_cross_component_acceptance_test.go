@@ -16,7 +16,7 @@ import (
 func TestCYCFActualTemplateAndBeatsLoader(t *testing.T) {
 	fixturePath := os.Getenv("CYCF_ACCEPTANCE_FIXTURES")
 	if fixturePath == "" {
-		fixturePath = filepath.Join("..", "..", "..", "..", "..", "..", "validation-harness", "fixtures.json")
+		fixturePath = filepath.Join("testdata", "cmdline_transform_fixtures.json")
 	}
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
